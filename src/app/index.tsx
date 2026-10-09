@@ -187,11 +187,10 @@ export default function EduStockApp() {
               </Text>
               <Text style={styles.greetingSub}>Sistem Monitoring Stok Real-time</Text>
             </View>
-
-
-
-
-            
+            <View style={styles.greetingRightCol}>
+              <View style={styles.roleBadge}>
+                <Text style={styles.roleBadgeText}>{currentUser.role}</Text>
+              </View>
               <TouchableOpacity style={styles.switchAccountBtn} onPress={handleLogout}>
                 <Feather name="repeat" size={11} color="#f87171" />
                 <Text style={styles.switchAccountText}>Ganti Akun</Text>
