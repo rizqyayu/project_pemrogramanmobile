@@ -13,33 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
-// Data Akun Demo sesuai Gambar
-const DEMO_ACCOUNTS = {
-  admin: {
-    username: 'admin',
-    name: 'Budi',
-    role: 'Admin Gudang',
-    aman: 3,
-    menipis: 3,
-    habis: 0,
-  },
-  staff: {
-    username: 'staff',
-    name: 'Rian',
-    role: 'Staff Inventory',
-    aman: 3,
-    menipis: 3,
-    habis: 0,
-  },
-  manager: {
-    username: 'manager',
-    name: 'Hendra',
-    role: 'Pemilik Toko / Manajer',
-    aman: 3,
-    menipis: 3,
-    habis: 0,
-  },
-};
+
 
 export default function EduStockApp() {
   const [currentView, setCurrentView] = useState<'login' | 'dashboard'>('login');
