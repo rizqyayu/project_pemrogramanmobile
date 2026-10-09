@@ -952,4 +952,48 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
-
+  activityTopLine: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  activityItemName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1e293b',
+  },
+  activityItemDiff: {
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  activityBottomLine: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  activityMeta: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  activityRemain: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  bottomNav: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  navItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  navLabel: {
+    fontSize: 9.5,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+});
