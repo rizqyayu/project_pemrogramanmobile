@@ -1,0 +1,177 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "admin",
+      "password": "password123",
+      "name": "Budi Santoso",
+      "email": "budi.gudang@edustock.com",
+      "role": "Admin Gudang"
+    },
+    {
+      "id": 2,
+      "username": "staff",
+      "password": "password123",
+      "name": "Rian Pratama",
+      "email": "rian.staff@edustock.com",
+      "role": "Staff Inventory"
+    },
+    {
+      "id": 3,
+      "username": "manager",
+      "password": "password123",
+      "name": "Hendra Wijaya",
+      "email": "hendra.owner@edustock.com",
+      "role": "Pemilik Toko / Manajer"
+    }
+  ],
+  "barang": [
+    {
+      "id": 1,
+      "kode_barang": "BRG-0001",
+      "nama_barang": "Laptop ASUS ExpertBook i5",
+      "kategori": "Elektronik",
+      "stok": 20,
+      "stok_minimum": 5,
+      "satuan": "Unit",
+      "harga_beli": 9500000,
+      "harga_jual": 11200000,
+      "lokasi_rak": "Rak A-01"
+    },
+    {
+      "id": 2,
+      "kode_barang": "BRG-0002",
+      "nama_barang": "Proyektor Epson EB-X400 3300 Lumens",
+      "kategori": "Elektronik",
+      "stok": 3,
+      "stok_minimum": 5,
+      "satuan": "Unit",
+      "harga_beli": 5200000,
+      "harga_jual": 6100000,
+      "lokasi_rak": "Rak A-03"
+    },
+    {
+      "id": 3,
+      "kode_barang": "BRG-0003",
+      "nama_barang": "Kabel HDMI Vention 5 Meter 4K",
+      "kategori": "Aksesoris",
+      "stok": 45,
+      "stok_minimum": 10,
+      "satuan": "Pcs",
+      "harga_beli": 85000,
+      "harga_jual": 120000,
+      "lokasi_rak": "Rak B-02"
+    },
+    {
+      "id": 4,
+      "kode_barang": "BRG-0004",
+      "nama_barang": "Spidol Whiteboard Snowman Hitam",
+      "kategori": "ATK",
+      "stok": 5,
+      "stok_minimum": 20,
+      "satuan": "Box",
+      "harga_beli": 95000,
+      "harga_jual": 125000,
+      "lokasi_rak": "Rak C-01"
+    },
+    {
+      "id": 5,
+      "kode_barang": "BRG-0005",
+      "nama_barang": "Kertas HVS PaperOne A4 80gr",
+      "kategori": "ATK",
+      "stok": 4,
+      "stok_minimum": 10,
+      "satuan": "Rim",
+      "harga_beli": 48000,
+      "harga_jual": 58000,
+      "lokasi_rak": "Rak C-05"
+    },
+    {
+      "id": 6,
+      "kode_barang": "BRG-0006",
+      "nama_barang": "Microphone Wireless Boya BY-V2",
+      "kategori": "Elektronik",
+      "stok": 8,
+      "stok_minimum": 5,
+      "satuan": "Set",
+      "harga_beli": 420000,
+      "harga_jual": 550000,
+      "lokasi_rak": "Rak A-05"
+    }
+  ],
+  "transaksi": [
+    {
+      "id": 1,
+      "id_barang": 4,
+      "nama_barang": "Spidol Whiteboard Snowman Hitam",
+      "jenis": "keluar",
+      "jumlah": 5,
+      "satuan": "Box",
+      "tanggal": "6 Okt 2026",
+      "operator": "Rian Pratama",
+      "role_operator": "Staff Inventory",
+      "sisa_stok": 5
+    },
+    {
+      "id": 2,
+      "id_barang": 4,
+      "nama_barang": "Spidol Whiteboard Snowman Hitam",
+      "jenis": "masuk",
+      "jumlah": 10,
+      "satuan": "Box",
+      "tanggal": "6 Okt 2026",
+      "operator": "Rian Pratama",
+      "role_operator": "Staff Inventory",
+      "sisa_stok": 10
+    },
+    {
+      "id": 3,
+      "id_barang": 1,
+      "nama_barang": "Laptop ASUS ExpertBook i5",
+      "jenis": "keluar",
+      "jumlah": 5,
+      "satuan": "Unit",
+      "tanggal": "6 Okt 2026",
+      "operator": "Budi Santoso",
+      "role_operator": "Admin Gudang",
+      "sisa_stok": 20
+    },
+    {
+      "id": 4,
+      "id_barang": 1,
+      "nama_barang": "Laptop ASUS ExpertBook i5",
+      "jenis": "masuk",
+      "jumlah": 10,
+      "satuan": "Unit",
+      "tanggal": "6 Okt 2026",
+      "operator": "Budi Santoso",
+      "role_operator": "Admin Gudang",
+      "sisa_stok": 25
+    },
+    {
+      "id": 5,
+      "id_barang": 2,
+      "nama_barang": "Proyektor Epson EB-X400 3300 Lumens",
+      "jenis": "keluar",
+      "jumlah": 2,
+      "satuan": "Unit",
+      "tanggal": "5 Okt 2026",
+      "operator": "Rian Pratama",
+      "role_operator": "Staff Inventory",
+      "sisa_stok": 3
+    },
+    {
+      "id": 6,
+      "id_barang": 1,
+      "nama_barang": "Laptop ASUS ExpertBook i5",
+      "jenis": "masuk",
+      "jumlah": 15,
+      "satuan": "Unit",
+      "tanggal": "3 Okt 2026",
+      "operator": "Rian Pratama",
+      "role_operator": "Staff Inventory",
+      "sisa_stok": 15
+    }
+  ]
+}
+
