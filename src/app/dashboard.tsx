@@ -1,35 +1,42 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TouchableOpacity,
-  ScrollView,
-  Platform,
-  StatusBar as RNStatusBar,
-  Alert,
-  ActivityIndicator,
-  RefreshControl,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Platform,
+  RefreshControl,
+  StatusBar as RNStatusBar,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Import Types
 import {
-  User,
+  AuthSession,
   Barang,
   TransaksiStok,
-  AuthSession,
+  User,
 } from '../types';
 
 // Import Services
 import {
-  logout,
-  getSavedSession,
   getAuthHeader,
+  getSavedSession,
+  logout,
 } from '../services/authService';
-import { getLoadedInventoryData } from '../services/dataService';
+import {
+  calculateInventorySummary,
+  determineStatusStok,
+  filterItemsBelowMinimum,
+  getLoadedInventoryData,
+} from '../services/dataService';
 
 /**
  * =========================================================================
@@ -68,7 +75,125 @@ export default function DashboardScreen() {
   // State untuk toggle visibilitas rincian token JWT
   const [showTokenDetails, setShowTokenDetails] = useState<boolean>(false);
 
+  // State Form Modal Interaktif: Stok Masuk & Stok Keluar
+  const [stokModalType, setStokModalType] = useState<'masuk' | 'keluar' | null>(null);
+  const [selectedBarangId, setSelectedBarangId] = useState<number>(1);
+  const [jumlahInput, setJumlahInput] = useState<string>('5');
+  const [catatanInput, setCatatanInput] = useState<string>('');
+
   const { summary, alertItems, transaksiList } = inventoryData;
+
+  // Buka Modal Formulir Stok Masuk / Keluar
+  const openStokModal = (type: 'masuk' | 'keluar') => {
+    setStokModalType(type);
+    setJumlahInput('5');
+    setCatatanInput(type === 'masuk' ? 'Pengadaan Stok Baru' : 'Distribusi Unit Lab');
+    if (inventoryData.barangList.length > 0) {
+      setSelectedBarangId(inventoryData.barangList[0].id);
+    }
+  };
+
+  // Stepper Pengubah Jumlah Unit (+ / -)
+  const changeJumlah = (delta: number) => {
+    const current = parseInt(jumlahInput, 10) || 0;
+    const next = Math.max(1, current + delta);
+    setJumlahInput(String(next));
+  };
+
+  // Barang yang sedang dipilih di Modal
+  const selectedBarang =
+    inventoryData.barangList.find((b) => b.id === selectedBarangId) ||
+    inventoryData.barangList[0];
+  const parsedJumlah = parseInt(jumlahInput, 10) || 0;
+  const estimasiStokAkhir = selectedBarang
+    ? stokModalType === 'masuk'
+      ? selectedBarang.stok + parsedJumlah
+      : selectedBarang.stok - parsedJumlah
+    : 0;
+  const isStokKurang =
+    stokModalType === 'keluar' && selectedBarang && parsedJumlah > selectedBarang.stok;
+
+  // Handler Simpan Transaksi Stok Masuk / Keluar
+  const handleSimpanTransaksi = () => {
+    if (!stokModalType || !selectedBarang) return;
+
+    if (parsedJumlah <= 0) {
+      Alert.alert('Perhatian', 'Jumlah unit harus berupa angka lebih dari 0.');
+      return;
+    }
+
+    if (isStokKurang) {
+      Alert.alert(
+        'Stok Tidak Mencukupi',
+        `Jumlah yang ingin dikeluarkan (${parsedJumlah} ${selectedBarang.satuan}) melebihi stok yang tersedia saat ini (${selectedBarang.stok} ${selectedBarang.satuan}).`
+      );
+      return;
+    }
+
+    // 1. Update data barang secara immutably
+    const currentBarangList = inventoryData.barangList.map((item) => {
+      if (item.id === selectedBarang.id) {
+        const newStok = estimasiStokAkhir;
+        const newStatus = determineStatusStok(newStok, item.stok_minimum);
+        return {
+          ...item,
+          stok: newStok,
+          status_stok: newStatus,
+        };
+      }
+      return item;
+    });
+
+    // 2. Format tanggal transaksi (contoh: 27 Okt 2026)
+    const todayStr = new Date().toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+
+    // 3. Tambahkan transaksi baru ke riwayat
+    const newTrx: TransaksiStok = {
+      id: Date.now(),
+      id_barang: selectedBarang.id,
+      nama_barang: selectedBarang.nama_barang,
+      jenis: stokModalType,
+      jumlah: parsedJumlah,
+      satuan: selectedBarang.satuan,
+      tanggal: todayStr,
+      operator: currentUser.name,
+      role_operator: currentUser.role,
+      sisa_stok: estimasiStokAkhir,
+    };
+
+    const updatedTrxList = [newTrx, ...inventoryData.transaksiList];
+
+    // 4. Hitung ulang summary dan alert items
+    const newSummary = calculateInventorySummary(currentBarangList, updatedTrxList);
+    const newAlertItems = filterItemsBelowMinimum(currentBarangList);
+
+    // 5. Update state inventaris (memicu pembaruan UI secara otomatis di Dashboard)
+    setInventoryData({
+      barangList: currentBarangList,
+      transaksiList: updatedTrxList,
+      summary: newSummary,
+      alertItems: newAlertItems,
+    });
+
+    const isMasuk = stokModalType === 'masuk';
+    const actionLabel = isMasuk ? 'Stok Masuk' : 'Stok Keluar';
+    const sign = isMasuk ? '+' : '-';
+    setStokModalType(null);
+
+    Alert.alert(
+      `Sukses Catat ${actionLabel}`,
+      `Transaksi berhasil disimpan!\n\n` +
+      `Barang: ${selectedBarang.nama_barang}\n` +
+      `Perubahan: ${sign}${parsedJumlah} ${selectedBarang.satuan}\n` +
+      `Stok Sekarang: ${estimasiStokAkhir} ${selectedBarang.satuan}\n` +
+      `Catatan: ${catatanInput || '-'}\n` +
+      `Operator: ${currentUser.name}`
+    );
+  };
 
   // -----------------------------------------------------------------------
   // PENERAPAN EFFECT (useEffect)
@@ -197,6 +322,7 @@ export default function DashboardScreen() {
           <Feather name="log-out" size={13} color="#ef4444" />
           <Text style={styles.logoutBtnText}>Keluar</Text>
         </TouchableOpacity>
+        
       </View>
 
       {/* Main Scroll Content */}
@@ -285,6 +411,7 @@ export default function DashboardScreen() {
             <Feather name="check-circle" size={13} color="#0369a1" />
             <Text style={styles.testHeaderBtnText}>Uji Authorization Header API</Text>
           </TouchableOpacity>
+          
         </View>
 
         {/* 2x2 Stats Summary Grid (Dapat ditekan untuk membuka halaman barang) */}
@@ -302,6 +429,7 @@ export default function DashboardScreen() {
               router.push('/barang');
             }}
           >
+
             <View style={styles.statCardHeader}>
               <View style={[styles.statIconBadge, { backgroundColor: '#eff6ff' }]}>
                 <Feather name="box" size={16} color="#2563eb" />
@@ -404,24 +532,35 @@ export default function DashboardScreen() {
           <Text style={styles.sectionTitle}>Aksi Cepat Inventory</Text>
         </View>
         <View style={styles.quickActionsRow}>
-          {/* Stok Masuk */}
+          {/* Scan Barcode (Sensor Kamera) */}
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#f5f3ff', borderColor: '#ddd6fe' }]}
+            onPress={() => router.push('/scanner')}
+          >
+            <View style={[styles.actionCircle, { backgroundColor: '#7c3aed' }]}>
+              <Feather name="camera" size={17} color="#ffffff" />
+            </View>
+            <Text style={[styles.actionText, { color: '#7c3aed' }]}>Scan Barcode</Text>
+          </TouchableOpacity>
+
+          {/* Stok Masuk (Aktif Interaktif) */}
           <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}
-            onPress={() => Alert.alert('Aksi Cepat', 'Formulir Stok Masuk Gudang')}
+            onPress={() => openStokModal('masuk')}
           >
             <View style={[styles.actionCircle, { backgroundColor: '#16a34a' }]}>
-              <Feather name="plus" size={18} color="#ffffff" />
+              <Feather name="plus" size={17} color="#ffffff" />
             </View>
             <Text style={[styles.actionText, { color: '#16a34a' }]}>Stok Masuk</Text>
           </TouchableOpacity>
 
-          {/* Stok Keluar */}
+          {/* Stok Keluar (Aktif Interaktif) */}
           <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]}
-            onPress={() => Alert.alert('Aksi Cepat', 'Formulir Pengeluaran Stok')}
+            onPress={() => openStokModal('keluar')}
           >
             <View style={[styles.actionCircle, { backgroundColor: '#dc2626' }]}>
-              <Feather name="minus" size={18} color="#ffffff" />
+              <Feather name="minus" size={17} color="#ffffff" />
             </View>
             <Text style={[styles.actionText, { color: '#dc2626' }]}>Stok Keluar</Text>
           </TouchableOpacity>
@@ -432,9 +571,9 @@ export default function DashboardScreen() {
             onPress={() => router.push('/barang')}
           >
             <View style={[styles.actionCircle, { backgroundColor: '#2563eb' }]}>
-              <Feather name="box" size={18} color="#ffffff" />
+              <Feather name="box" size={17} color="#ffffff" />
             </View>
-            <Text style={[styles.actionText, { color: '#2563eb' }]}>Daftar Barang</Text>
+            <Text style={[styles.actionText, { color: '#2563eb' }]}>Barang</Text>
           </TouchableOpacity>
         </View>
 
@@ -544,6 +683,248 @@ export default function DashboardScreen() {
           <Text style={styles.navLabel}>Menu</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ============================================================= */}
+      {/* MODAL FORMULIR TRANSAKSI: STOK MASUK & STOK KELUAR           */}
+      {/* Memenuhi Kriteria Modul 2: useState untuk Form & Mutasi State */}
+      {/* ============================================================= */}
+      <Modal
+        visible={stokModalType !== null}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setStokModalType(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.transaksiModalContent}>
+            {/* Modal Header */}
+            <View style={styles.transaksiModalHeader}>
+              <View style={styles.transaksiHeaderLeft}>
+                <View
+                  style={[
+                    styles.transaksiIconCircle,
+                    {
+                      backgroundColor:
+                        stokModalType === 'masuk' ? '#f0fdf4' : '#fef2f2',
+                    },
+                  ]}
+                >
+                  <Feather
+                    name={stokModalType === 'masuk' ? 'arrow-down-circle' : 'arrow-up-circle'}
+                    size={22}
+                    color={stokModalType === 'masuk' ? '#16a34a' : '#dc2626'}
+                  />
+                </View>
+                <View>
+                  <Text style={styles.transaksiModalTitle}>
+                    {stokModalType === 'masuk' ? 'Formulir Stok Masuk' : 'Formulir Stok Keluar'}
+                  </Text>
+                  <Text style={styles.transaksiModalSubtitle}>
+                    {stokModalType === 'masuk'
+                      ? 'Tambah stok unit barang masuk gudang'
+                      : 'Catat pengurangan stok barang keluar gudang'}
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={styles.transaksiCloseBtn}
+                onPress={() => setStokModalType(null)}
+              >
+                <Feather name="x" size={18} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+              {/* Field 1: Pilih Barang */}
+              <View style={styles.formSection}>
+                <Text style={styles.formSectionLabel}>1. Pilih Barang Inventaris:</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.barangScrollPills}
+                >
+                  {inventoryData.barangList.map((item) => {
+                    const isSelected = item.id === selectedBarang?.id;
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[
+                          styles.barangSelectPill,
+                          isSelected && styles.barangSelectPillActive,
+                        ]}
+                        activeOpacity={0.7}
+                        onPress={() => setSelectedBarangId(item.id)}
+                      >
+                        <Text
+                          style={[
+                            styles.barangSelectName,
+                            isSelected && styles.barangSelectNameActive,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.nama_barang}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.barangSelectSub,
+                            isSelected && styles.barangSelectSubActive,
+                          ]}
+                        >
+                          {item.kode_barang} • Stok: {item.stok} {item.satuan}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              {/* Field 2: Jumlah Unit */}
+              <View style={styles.formSection}>
+                <Text style={styles.formSectionLabel}>2. Jumlah Unit:</Text>
+                <View style={styles.stepperContainer}>
+                  <TouchableOpacity
+                    style={styles.stepBtn}
+                    activeOpacity={0.7}
+                    onPress={() => changeJumlah(-1)}
+                  >
+                    <Feather name="minus" size={18} color="#1e293b" />
+                  </TouchableOpacity>
+
+                  <TextInput
+                    style={styles.qtyInput}
+                    keyboardType="number-pad"
+                    value={jumlahInput}
+                    onChangeText={setJumlahInput}
+                    selectTextOnFocus
+                  />
+
+                  <TouchableOpacity
+                    style={styles.stepBtn}
+                    activeOpacity={0.7}
+                    onPress={() => changeJumlah(1)}
+                  >
+                    <Feather name="plus" size={18} color="#1e293b" />
+                  </TouchableOpacity>
+
+                  {/* Quick Shortcut Buttons */}
+                  <TouchableOpacity
+                    style={styles.quickAddPill}
+                    onPress={() => changeJumlah(5)}
+                  >
+                    <Text style={styles.quickAddText}>+5</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.quickAddPill}
+                    onPress={() => changeJumlah(10)}
+                  >
+                    <Text style={styles.quickAddText}>+10</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Field 3: Keterangan / Keperluan */}
+              <View style={styles.formSection}>
+                <Text style={styles.formSectionLabel}>3. Catatan / Keperluan:</Text>
+                <TextInput
+                  style={styles.catatanInput}
+                  placeholder="Contoh: Pengadaan Baru, Distribusi Ruang Lab..."
+                  placeholderTextColor="#94a3b8"
+                  value={catatanInput}
+                  onChangeText={setCatatanInput}
+                />
+              </View>
+
+              {/* Preview Kalkulasi Stok Otomatis */}
+              {selectedBarang ? (
+                <View
+                  style={[
+                    styles.calcPreviewCard,
+                    isStokKurang && styles.calcPreviewCardError,
+                  ]}
+                >
+                  <Text style={styles.calcPreviewTitle}>Ringkasan Perubahan Stok:</Text>
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>Barang:</Text>
+                    <Text style={styles.calcValue}>{selectedBarang.nama_barang}</Text>
+                  </View>
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>Stok Gudang Saat Ini:</Text>
+                    <Text style={styles.calcValue}>
+                      {selectedBarang.stok} {selectedBarang.satuan}
+                    </Text>
+                  </View>
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>
+                      Perubahan ({stokModalType === 'masuk' ? 'Masuk' : 'Keluar'}):
+                    </Text>
+                    <Text
+                      style={[
+                        styles.calcValue,
+                        {
+                          color: stokModalType === 'masuk' ? '#16a34a' : '#dc2626',
+                          fontWeight: '800',
+                        },
+                      ]}
+                    >
+                      {stokModalType === 'masuk' ? `+${parsedJumlah}` : `-${parsedJumlah}`}{' '}
+                      {selectedBarang.satuan}
+                    </Text>
+                  </View>
+                  <View style={[styles.calcRow, styles.calcRowTotal]}>
+                    <Text style={styles.calcTotalLabel}>Estimasi Stok Akhir:</Text>
+                    <Text
+                      style={[
+                        styles.calcTotalValue,
+                        isStokKurang && { color: '#dc2626' },
+                      ]}
+                    >
+                      {estimasiStokAkhir} {selectedBarang.satuan}
+                    </Text>
+                  </View>
+
+                  {/* Peringatan jika stok tidak cukup */}
+                  {isStokKurang ? (
+                    <View style={styles.errorWarnBox}>
+                      <Feather name="alert-circle" size={14} color="#dc2626" />
+                      <Text style={styles.errorWarnText}>
+                        Jumlah melebihi stok yang tersedia saat ini!
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </ScrollView>
+
+            {/* Action Buttons */}
+            <View style={styles.modalActionButtons}>
+              <TouchableOpacity
+                style={styles.modalBatalBtn}
+                onPress={() => setStokModalType(null)}
+              >
+                <Text style={styles.modalBatalBtnText}>Batal</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.modalSubmitBtn,
+                  {
+                    backgroundColor:
+                      stokModalType === 'masuk' ? '#16a34a' : '#dc2626',
+                  },
+                  isStokKurang && { opacity: 0.5 },
+                ]}
+                disabled={isStokKurang}
+                onPress={handleSimpanTransaksi}
+              >
+                <Feather name="check" size={16} color="#ffffff" />
+                <Text style={styles.modalSubmitBtnText}>
+                  {stokModalType === 'masuk' ? 'Simpan Stok Masuk' : 'Simpan Stok Keluar'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1030,5 +1411,253 @@ const styles = StyleSheet.create({
     fontSize: 9.5,
     fontWeight: '600',
     color: '#64748b',
+  },
+
+  // Styles Modal Transaksi Stok Masuk & Keluar
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  transaksiModalContent: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+    maxHeight: '85%',
+  },
+  transaksiModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  transaksiHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  transaksiIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transaksiModalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  transaksiModalSubtitle: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  transaksiCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formSection: {
+    marginBottom: 14,
+  },
+  formSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+  },
+  barangScrollPills: {
+    gap: 8,
+    paddingBottom: 4,
+  },
+  barangSelectPill: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 140,
+  },
+  barangSelectPillActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#2563eb',
+  },
+  barangSelectName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1e293b',
+    marginBottom: 2,
+  },
+  barangSelectNameActive: {
+    color: '#2563eb',
+  },
+  barangSelectSub: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  barangSelectSubActive: {
+    color: '#1d4ed8',
+  },
+  stepperContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  stepBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  qtyInput: {
+    width: 60,
+    height: 40,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 10,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  quickAddPill: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  quickAddText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  catatanInput: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 42,
+    fontSize: 12.5,
+    color: '#0f172a',
+  },
+  calcPreviewCard: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 16,
+  },
+  calcPreviewCardError: {
+    backgroundColor: '#fff5f5',
+    borderColor: '#fca5a5',
+  },
+  calcPreviewTitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 8,
+  },
+  calcRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 3,
+  },
+  calcLabel: {
+    fontSize: 11,
+    color: '#64748b',
+  },
+  calcValue: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  calcRowTotal: {
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    marginTop: 4,
+    paddingTop: 6,
+  },
+  calcTotalLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  calcTotalValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#16a34a',
+  },
+  errorWarnBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    backgroundColor: '#fee2e2',
+    padding: 6,
+    borderRadius: 6,
+  },
+  errorWarnText: {
+    fontSize: 10.5,
+    color: '#dc2626',
+    fontWeight: '600',
+  },
+  modalActionButtons: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  modalBatalBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalBatalBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  modalSubmitBtn: {
+    flex: 2,
+    flexDirection: 'row',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  modalSubmitBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#ffffff',
   },
 });

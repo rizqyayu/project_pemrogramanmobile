@@ -44,28 +44,24 @@ export default function LoginScreen() {
 
   // -----------------------------------------------------------------------
   // PENERAPAN EFFECT (useEffect)
-  // Dijalankan sekali saat komponen pertama kali dibuka (dependency array kosong [])
-  // Bertujuan memeriksa apakah token/sesi pengguna sudah tersimpan di AsyncStorage
+  // Dijalankan sekali saat halaman Login pertama kali dibuka (dependency array kosong [])
+  // Bertujuan memuat sesi terakhir jika ada, tanpa langsung melewati layar Login.
+  // Dengan ini, aplikasi SELALU menampilkan Halaman Login saat dibuka untuk kebutuhan demo.
   // -----------------------------------------------------------------------
   useEffect(() => {
-    async function checkExistingSession() {
+    async function loadLastSavedUser() {
       try {
         const savedSession = await getSavedSession();
-        if (savedSession) {
-          /**
-           * PERBEDAAN ROUTER:
-           * router.replace(): Menggantikan layar saat ini pada tumpukan navigasi.
-           * Pengguna yang sudah login langsung dialihkan ke Dashboard tanpa bisa
-           * menekan tombol 'Back' untuk kembali ke halaman login.
-           */
-          router.replace('/dashboard');
+        if (savedSession?.user?.username) {
+          // Mengisi username terakhir secara otomatis untuk mempermudah demo
+          setUsernameInput(savedSession.user.username);
         }
       } catch (err) {
-        console.warn('Gagal memulihkan session:', err);
+        console.warn('Gagal memuat sesi sebelumnya:', err);
       }
     }
 
-    checkExistingSession();
+    loadLastSavedUser();
   }, []);
 
   // -----------------------------------------------------------------------
