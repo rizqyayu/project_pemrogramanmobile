@@ -252,7 +252,7 @@ export default function BarangScreen() {
       </View>
 
       {/* ----------------------------------------------------------------- */}
-      {/* INPUT PENCARIAN (useState searchQuery)                            */}
+      {/* INPUT PENCARIAN (useState searchQuery & Sensor Kamera)            */}
       {/* ----------------------------------------------------------------- */}
       <View style={styles.searchSection}>
         <View style={styles.searchBar}>
@@ -266,9 +266,18 @@ export default function BarangScreen() {
           />
           {searchQuery.length > 0 && (
             <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Feather name="x-circle" size={16} color="#94a3b8" />
+              <Feather name="x-circle" size={16} color="#94a3b8" style={{ marginRight: 6 }} />
             </TouchableOpacity>
           )}
+          {/* Tombol Sensor Kamera (Scan Barcode) */}
+          <TouchableOpacity
+            style={styles.scanCameraIconBtn}
+            activeOpacity={0.7}
+            onPress={() => router.push('/scanner')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Feather name="camera" size={18} color="#2563eb" />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -460,6 +469,12 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     color: '#0f172a',
+  },
+  scanCameraIconBtn: {
+    paddingLeft: 8,
+    paddingVertical: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   categoriesContainer: {
     backgroundColor: '#ffffff',

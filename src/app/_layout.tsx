@@ -54,6 +54,14 @@ export default function RootLayout() {
             title: 'Daftar Barang',
           }}
         />
+
+        {/* Rute 4: Halaman Scanner Kamera Barcode / QR (src/app/scanner.tsx) */}
+        <Stack.Screen
+          name="scanner"
+          options={{
+            title: 'Scan Barcode Barang',
+          }}
+        />
       </Stack>
     </>
   );
