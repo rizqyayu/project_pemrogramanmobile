@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -20,6 +20,7 @@ import { Barang } from '../types';
 
 // Import Service API & Data
 import { fetchBarangList } from '../services/dataService';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
 
 /**
  * =========================================================================
@@ -57,7 +58,12 @@ export default function BarangScreen() {
   // Dijalankan sekali saat komponen dipasang ke layar (Mounting).
   // Dependency array kosong [] memastikan pemanggilan API tidak terjadi berulang tanpa alasan.
   // -----------------------------------------------------------------------
+  // Ref penanda proses fetch sedang berjalan untuk proteksi anti-loop
+  const isFetchingRef = useRef<boolean>(false);
+
   const loadData = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     try {
       const result = await fetchBarangList();
       setBarangList(result.data);
@@ -67,8 +73,23 @@ export default function BarangScreen() {
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+      isFetchingRef.current = false;
     }
   }, []);
+
+  // -----------------------------------------------------------------------
+  // OFFLINE HANDLING & REKONEKSI OTOMATIS
+  // Memenuhi Ketentuan:
+  // 1. Deteksi status koneksi internet perangkat secara real-time
+  // 2. Melanjutkan pengambilan data saat koneksi kembali tersedia (onReconnect)
+  // 3. Mencegah request API berulang tanpa kendali (cooldown 4000ms & isFetchingRef)
+  // -----------------------------------------------------------------------
+  const { isOffline } = useNetworkStatus({
+    onReconnect: async () => {
+      await loadData();
+    },
+    cooldownMs: 4000,
+  });
 
   useEffect(() => {
     let isMounted = true;
@@ -227,26 +248,44 @@ export default function BarangScreen() {
           <Text style={styles.headerSubtitle}>Katalog Inventaris EduStock</Text>
         </View>
 
-        {/* Badge Sumber Data (Membedakan Backend PHP XAMPP vs Data Lokal) */}
+        {/* Badge Sumber Data & Indikator Status Offline */}
         <View
           style={[
             styles.sourceBadge,
-            { backgroundColor: dataSource === 'api' ? '#ecfdf5' : '#f1f5f9' },
+            {
+              backgroundColor: isOffline
+                ? '#fef2f2'
+                : dataSource === 'api'
+                ? '#ecfdf5'
+                : '#f1f5f9',
+            },
           ]}
         >
           <View
             style={[
               styles.sourceDot,
-              { backgroundColor: dataSource === 'api' ? '#10b981' : '#94a3b8' },
+              {
+                backgroundColor: isOffline
+                  ? '#ef4444'
+                  : dataSource === 'api'
+                  ? '#10b981'
+                  : '#94a3b8',
+              },
             ]}
           />
           <Text
             style={[
               styles.sourceText,
-              { color: dataSource === 'api' ? '#047857' : '#475569' },
+              {
+                color: isOffline
+                  ? '#dc2626'
+                  : dataSource === 'api'
+                  ? '#047857'
+                  : '#475569',
+              },
             ]}
           >
-            {dataSource === 'api' ? 'XAMPP API' : 'Lokal JSON'}
+            {isOffline ? 'Offline (Lokal)' : dataSource === 'api' ? 'XAMPP API' : 'Lokal JSON'}
           </Text>
         </View>
       </View>
@@ -280,6 +319,18 @@ export default function BarangScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* NOTIFIKASI KONDISI OFFLINE                                       */}
+      {/* ----------------------------------------------------------------- */}
+      {isOffline && (
+        <View style={styles.offlineNoticeBar}>
+          <Feather name="wifi-off" size={13} color="#b45309" style={{ marginRight: 6 }} />
+          <Text style={styles.offlineNoticeText}>
+            Mode Offline: Menampilkan data lokal. Data akan diperbarui otomatis saat koneksi kembali.
+          </Text>
+        </View>
+      )}
 
       {/* ----------------------------------------------------------------- */}
       {/* FILTER KATEGORI (useState selectedCategory)                       */}
@@ -746,5 +797,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#2563eb',
+  },
+  offlineNoticeBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  offlineNoticeText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#92400e',
+    fontWeight: '500',
+    lineHeight: 16,
   },
 });

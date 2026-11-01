@@ -1,3 +1,4 @@
+import NetInfo from '@react-native-community/netinfo';
 import rawInventoryData from '../data/inventoryData.json';
 import {
   Barang,
@@ -193,6 +194,21 @@ export async function fetchBarangList(): Promise<{
   source: 'api' | 'local';
   message: string;
 }> {
+  // Pengecekan awal status konektivitas internet (Offline Handling)
+  try {
+    const netState = await NetInfo.fetch();
+    if (netState.isConnected === false || netState.isInternetReachable === false) {
+      const localList = mapJsonToBarangList(rawInventoryData.barang);
+      return {
+        data: localList,
+        source: 'local',
+        message: 'Koneksi internet tidak tersedia. Menampilkan data inventaris lokal (Mode Offline).',
+      };
+    }
+  } catch {
+    // Abaikan kegagalan NetInfo dan lanjutkan mencoba request API
+  }
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5 detik timeout
