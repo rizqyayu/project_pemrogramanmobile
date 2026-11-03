@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,6 +12,7 @@ import {
   RefreshControl,
   Image,
   ScrollView,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -47,13 +48,13 @@ export default function BarangScreen() {
   // -----------------------------------------------------------------------
   // 1. STATE SIKLUS API (Loading, Success, Error)
   // -----------------------------------------------------------------------
-  const [barangList, setBarangList] = useState<Barang[]>([]); // Data master barang (hanya terisi saat 2xx)
-  const [filteredList, setFilteredList] = useState<Barang[]>([]); // Data setelah pencarian/kategori
+  const [barangList, setBarangList] = useState<Barang[]>([]); // Data master barang (State Data)
   const [searchQuery, setSearchQuery] = useState<string>(''); // Kata kunci pencarian
   const [selectedCategory, setSelectedCategory] = useState<string>('Semua'); // Filter kategori
   const [isLoading, setIsLoading] = useState<boolean>(true); // Status loading saat fetch
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false); // Pull to refresh
   const [error, setError] = useState<AppApiError | null>(null); // State API Error (4xx, 5xx, Network Error)
+  const [selectedDetailBarang, setSelectedDetailBarang] = useState<Barang | null>(null); // State Modal Detail Barang
 
   // Mode Pengujian Rubrik Task 01: '2xx' | '4xx' | '5xx' | 'network' | 'none'
   const [currentMode, setCurrentMode] = useState<MockCondition>(() => getActiveMockCondition());
@@ -138,9 +139,9 @@ export default function BarangScreen() {
   }, []);
 
   // -----------------------------------------------------------------------
-  // 3. EFFECT FILTER & SEARCH (Hanya Berjalan Saat Data 2xx Tersedia)
+  // 3. COMPUTED FILTER & SEARCH (useMemo agar reaktif tanpa cascading render)
   // -----------------------------------------------------------------------
-  useEffect(() => {
+  const filteredList = useMemo(() => {
     let result = [...barangList];
 
     if (selectedCategory !== 'Semua') {
@@ -158,7 +159,7 @@ export default function BarangScreen() {
       );
     }
 
-    setFilteredList(result);
+    return result;
   }, [searchQuery, selectedCategory, barangList]);
 
   // Handler Pull to Refresh
@@ -197,7 +198,11 @@ export default function BarangScreen() {
     const dotColor = isHabis ? '#ef4444' : isMenipis ? '#f59e0b' : '#22c55e';
 
     return (
-      <View style={styles.card}>
+      <TouchableOpacity
+        style={styles.card}
+        activeOpacity={0.85}
+        onPress={() => setSelectedDetailBarang(item)}
+      >
         <View style={styles.cardMainRow}>
           {/* Gambar Thumbnail Produk */}
           <View style={styles.productImageWrapper}>
@@ -265,7 +270,13 @@ export default function BarangScreen() {
             <Text style={styles.priceBeliText}>Beli: {formatRupiah(item.harga_beli)}</Text>
           </View>
         </View>
-      </View>
+
+        {/* Petunjuk Ketuk Kartu */}
+        <View style={styles.cardTapHintRow}>
+          <Text style={styles.cardTapHintText}>Ketuk untuk rincian spesifikasi & analisis margin</Text>
+          <Feather name="chevron-right" size={13} color="#94a3b8" />
+        </View>
+      </TouchableOpacity>
     );
   };
 
@@ -607,6 +618,173 @@ export default function BarangScreen() {
           <Text style={styles.backHomeText}>Kembali ke Dashboard</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* MODAL RINCIAN SPESIFIKASI BARANG & VALUASI PRODUK                 */}
+      {/* ----------------------------------------------------------------- */}
+      <Modal
+        visible={selectedDetailBarang !== null}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setSelectedDetailBarang(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.detailModalContent}>
+            {/* Modal Header */}
+            <View style={styles.detailModalHeader}>
+              <View style={styles.detailHeaderTitleWrap}>
+                <Text style={styles.detailModalTitle}>Rincian Spesifikasi Barang</Text>
+                <Text style={styles.detailModalSubtitle}>
+                  {selectedDetailBarang?.kode_barang} • {selectedDetailBarang?.kategori}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.detailCloseBtn}
+                onPress={() => setSelectedDetailBarang(null)}
+              >
+                <Feather name="x" size={18} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {selectedDetailBarang && (
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 440 }}>
+                {/* Visual Image / Banner */}
+                <View style={styles.detailHeroWrapper}>
+                  {selectedDetailBarang.gambar ? (
+                    <Image
+                      source={{ uri: selectedDetailBarang.gambar }}
+                      style={styles.detailHeroImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.detailHeroPlaceholder}>
+                      <Feather name="box" size={48} color="#94a3b8" />
+                    </View>
+                  )}
+                  <View
+                    style={[
+                      styles.detailStatusOverlay,
+                      selectedDetailBarang.status_stok === 'Habis'
+                        ? { backgroundColor: '#fee2e2' }
+                        : selectedDetailBarang.status_stok === 'Menipis'
+                        ? { backgroundColor: '#fef3c7' }
+                        : { backgroundColor: '#dcfce7' },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.statusDot,
+                        {
+                          backgroundColor:
+                            selectedDetailBarang.status_stok === 'Habis'
+                              ? '#ef4444'
+                              : selectedDetailBarang.status_stok === 'Menipis'
+                              ? '#f59e0b'
+                              : '#22c55e',
+                        },
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.detailStatusText,
+                        selectedDetailBarang.status_stok === 'Habis'
+                          ? { color: '#dc2626' }
+                          : selectedDetailBarang.status_stok === 'Menipis'
+                          ? { color: '#b45309' }
+                          : { color: '#15803d' },
+                      ]}
+                    >
+                      Status: {selectedDetailBarang.status_stok}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Nama & Deskripsi */}
+                <Text style={styles.detailItemTitle}>{selectedDetailBarang.nama_barang}</Text>
+                <Text style={styles.detailItemDesc}>
+                  {selectedDetailBarang.deskripsi || 'Tidak ada deskripsi rinci untuk barang ini.'}
+                </Text>
+
+                {/* Info Grid 2x2: Stok, Stok Min, Rak, Kategori */}
+                <View style={styles.detailSpecsGrid}>
+                  <View style={styles.specBox}>
+                    <Text style={styles.specLabel}>Stok Tersedia</Text>
+                    <Text style={styles.specValue}>
+                      {selectedDetailBarang.stok} {selectedDetailBarang.satuan}
+                    </Text>
+                  </View>
+                  <View style={styles.specBox}>
+                    <Text style={styles.specLabel}>Batas Minimum</Text>
+                    <Text style={styles.specValue}>
+                      {selectedDetailBarang.stok_minimum} {selectedDetailBarang.satuan}
+                    </Text>
+                  </View>
+                  <View style={styles.specBox}>
+                    <Text style={styles.specLabel}>Lokasi Rak / Lemari</Text>
+                    <Text style={styles.specValue}>{selectedDetailBarang.lokasi_rak}</Text>
+                  </View>
+                  <View style={styles.specBox}>
+                    <Text style={styles.specLabel}>Kategori</Text>
+                    <Text style={styles.specValue}>{selectedDetailBarang.kategori}</Text>
+                  </View>
+                </View>
+
+                {/* Analisis Finansial per Unit */}
+                <View style={styles.detailFinanceCard}>
+                  <Text style={styles.detailFinanceTitle}>Analisis Finansial & Valuasi:</Text>
+                  <View style={styles.financeDetailRow}>
+                    <Text style={styles.financeDetailLabel}>Harga Pengadaan (Beli):</Text>
+                    <Text style={styles.financeDetailValue}>
+                      {formatRupiah(selectedDetailBarang.harga_beli)}
+                    </Text>
+                  </View>
+                  <View style={styles.financeDetailRow}>
+                    <Text style={styles.financeDetailLabel}>Harga Distribusi (Jual):</Text>
+                    <Text style={[styles.financeDetailValue, { color: '#2563eb' }]}>
+                      {formatRupiah(selectedDetailBarang.harga_jual)}
+                    </Text>
+                  </View>
+                  <View style={styles.financeDetailRow}>
+                    <Text style={styles.financeDetailLabel}>Margin per Unit:</Text>
+                    <Text style={[styles.financeDetailValue, { color: '#16a34a' }]}>
+                      +{formatRupiah(selectedDetailBarang.harga_jual - selectedDetailBarang.harga_beli)}
+                    </Text>
+                  </View>
+                  <View style={[styles.financeDetailRow, styles.financeDetailTotalRow]}>
+                    <Text style={styles.financeDetailTotalLabel}>Total Valuasi Aset Stok Ini:</Text>
+                    <Text style={styles.financeDetailTotalValue}>
+                      {formatRupiah(selectedDetailBarang.harga_beli * selectedDetailBarang.stok)}
+                    </Text>
+                  </View>
+                </View>
+              </ScrollView>
+            )}
+
+            {/* Modal Actions */}
+            <View style={styles.detailActionRow}>
+              <TouchableOpacity
+                style={styles.detailScanActionBtn}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setSelectedDetailBarang(null);
+                  router.push('/scanner');
+                }}
+              >
+                <Feather name="camera" size={15} color="#2563eb" />
+                <Text style={styles.detailScanActionText}>Scan Barcode</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.detailCloseActionBtn}
+                activeOpacity={0.8}
+                onPress={() => setSelectedDetailBarang(null)}
+              >
+                <Text style={styles.detailCloseActionText}>Tutup</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1123,5 +1301,216 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#2563eb',
+  },
+  // -------------------------------------------------------------
+  // STYLESHEET: MODAL DETAIL SPESIFIKASI BARANG
+  // -------------------------------------------------------------
+  cardTapHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f8fafc',
+  },
+  cardTapHintText: {
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: '500',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'flex-end',
+  },
+  detailModalContent: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+    maxHeight: '90%',
+  },
+  detailModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  detailHeaderTitleWrap: {
+    flex: 1,
+  },
+  detailModalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  detailModalSubtitle: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  detailCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detailHeroWrapper: {
+    height: 160,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#f8fafc',
+    marginVertical: 12,
+    position: 'relative',
+  },
+  detailHeroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  detailHeroPlaceholder: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+  },
+  detailStatusOverlay: {
+    position: 'absolute',
+    bottom: 10,
+    left: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  detailStatusText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  detailItemTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  detailItemDesc: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  detailSpecsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  specBox: {
+    width: '48%',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 10,
+  },
+  specLabel: {
+    fontSize: 10.5,
+    color: '#64748b',
+    marginBottom: 2,
+  },
+  specValue: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  detailFinanceCard: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
+  },
+  detailFinanceTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#166534',
+    marginBottom: 8,
+  },
+  financeDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 3,
+  },
+  financeDetailLabel: {
+    fontSize: 11,
+    color: '#14532d',
+  },
+  financeDetailValue: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#15803d',
+  },
+  financeDetailTotalRow: {
+    borderTopWidth: 1,
+    borderTopColor: '#bbf7d0',
+    marginTop: 6,
+    paddingTop: 6,
+  },
+  financeDetailTotalLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#14532d',
+  },
+  financeDetailTotalValue: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: '#16a34a',
+  },
+  detailActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  detailScanActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 12,
+    paddingVertical: 12,
+  },
+  detailScanActionText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#2563eb',
+  },
+  detailCloseActionBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+    borderRadius: 12,
+    paddingVertical: 12,
+  },
+  detailCloseActionText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#475569',
   },
 });
