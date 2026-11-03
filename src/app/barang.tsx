@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,77 +10,120 @@ import {
   StatusBar as RNStatusBar,
   ActivityIndicator,
   RefreshControl,
+  Image,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Feather, Ionicons } from '@expo/vector-icons';
+import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
-// Import Model Data
-import { Barang } from '../types';
+// Import Model Data & Tipe Error
+import { Barang, AppApiError } from '../types';
 
-// Import Service API & Data
-import { fetchBarangList } from '../services/dataService';
+// Import Service API
+import {
+  fetchBarangList,
+  setActiveMockCondition,
+  getActiveMockCondition,
+  MockCondition,
+} from '../services/dataService';
 
 /**
  * =========================================================================
- * HALAMAN 3: DAFTAR BARANG (src/app/barang.tsx)
- * Memenuhi Kriteria Modul 2:
- * 1. useState:
- *    - barangList: Menyimpan kumpulan data barang master.
- *    - filteredList: Menyimpan data barang setelah disaring.
- *    - searchQuery: Menyimpan teks pencarian secara reaktif.
- *    - selectedCategory: Menyimpan kategori filter yang aktif.
- *    - isLoading & isRefreshing: Mengatur indikator pemuatan data.
- *    - dataSource: Menandai apakah data dari Backend PHP XAMPP atau Local Cache.
- * 2. useEffect:
- *    - Effect 1 ([]): Memuat data barang dari API backend saat halaman dibuka.
- *    - Effect 2 ([searchQuery, selectedCategory, barangList]):
- *      Menjalankan filter reaktif secara otomatis setiap kali kata kunci atau kategori berubah.
- * 3. Expo Router:
- *    - router.back(): Navigasi kembali ke halaman sebelumnya (Dashboard) dari tumpukan stack.
+ * TASK 01 - HANDLE API ERROR (src/app/barang.tsx)
+ * Memenuhi Kriteria Rubrik Praktikum:
+ * 1. Loading (Request): Menampilkan indikator memuat data saat request dikirim.
+ *    - Indikator ActivityIndicator
+ *    - Teks "Memuat data..." dan "Mohon tunggu sebentar"
+ * 2. Success (2xx): Data HANYA ditampilkan ketika request berhasil (2xx).
+ * 3. Client Error (4xx): Menampilkan error state kesalahan klien (misal 404 Data Tidak Ditemukan).
+ * 4. Server Error (5xx): Menampilkan error state kesalahan server (misal 500 Terjadi Kesalahan pada Server).
+ * 5. Request Gagal: Menampilkan error state koneksi jaringan / network error.
+ * 6. Terdapat tombol Coba Lagi (Retry Button) berwarna merah untuk mengulang request.
+ * 7. Data TIDAK ditampilkan ketika request gagal (data list dikosongkan).
  * =========================================================================
  */
 export default function BarangScreen() {
   // -----------------------------------------------------------------------
-  // 1. PENERAPAN STATE (useState)
+  // 1. STATE SIKLUS API (Loading, Success, Error)
   // -----------------------------------------------------------------------
-  const [barangList, setBarangList] = useState<Barang[]>([]); // Data master barang
-  const [filteredList, setFilteredList] = useState<Barang[]>([]); // Data barang yang ditampilkan setelah filter
-  const [searchQuery, setSearchQuery] = useState<string>(''); // Teks input pencarian
-  const [selectedCategory, setSelectedCategory] = useState<string>('Semua'); // Kategori terpilih
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Status loading saat fetch awal
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(false); // Status refresh tarik layar (pull-to-refresh)
-  const [dataSource, setDataSource] = useState<'api' | 'local'>('local'); // Sumber data (API XAMPP / Local Data)
+  const [barangList, setBarangList] = useState<Barang[]>([]); // Data master barang (hanya terisi saat 2xx)
+  const [filteredList, setFilteredList] = useState<Barang[]>([]); // Data setelah pencarian/kategori
+  const [searchQuery, setSearchQuery] = useState<string>(''); // Kata kunci pencarian
+  const [selectedCategory, setSelectedCategory] = useState<string>('Semua'); // Filter kategori
+  const [isLoading, setIsLoading] = useState<boolean>(true); // Status loading saat fetch
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false); // Pull to refresh
+  const [error, setError] = useState<AppApiError | null>(null); // State API Error (4xx, 5xx, Network Error)
+
+  // Mode Pengujian Rubrik Task 01: '2xx' | '4xx' | '5xx' | 'network' | 'none'
+  const [currentMode, setCurrentMode] = useState<MockCondition>(() => getActiveMockCondition());
+  const [showTestBar, setShowTestBar] = useState<boolean>(true); // Toggle panel uji evaluasi tugas
+
+  // Ref penanda proses fetch sedang berjalan untuk proteksi anti-loop
+  const isFetchingRef = useRef<boolean>(false);
 
   // -----------------------------------------------------------------------
-  // 2. PENERAPAN EFFECT (useEffect - Effect 1: Initial Load)
-  // Dijalankan sekali saat komponen dipasang ke layar (Mounting).
-  // Dependency array kosong [] memastikan pemanggilan API tidak terjadi berulang tanpa alasan.
+  // 2. FUNGSI LOAD DATA DENGAN ERROR HANDLING
   // -----------------------------------------------------------------------
   const loadData = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    setIsLoading(true);
+    setError(null);
+
     try {
       const result = await fetchBarangList();
-      setBarangList(result.data);
-      setDataSource(result.source);
-    } catch (error) {
-      console.warn('Gagal memuat barang:', error);
+      if (result.error) {
+        // [Rubrik]: Data TIDAK ditampilkan ketika request gagal
+        setBarangList([]);
+        setError(result.error);
+      } else {
+        // [Rubrik]: Data HANYA ditampilkan ketika request berhasil (2xx)
+        setBarangList(result.data);
+        setError(null);
+      }
+    } catch (err: any) {
+      console.log('API Error: ', err);
+      setBarangList([]);
+      setError({
+        kind: 'NETWORK_ERROR',
+        title: 'Koneksi Jaringan Gagal',
+        message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
+      });
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+      isFetchingRef.current = false;
     }
   }, []);
 
+  // Inisialisasi saat pertama kali layar dibuka
   useEffect(() => {
     let isMounted = true;
     async function init() {
+      setIsLoading(true);
+      setError(null);
       try {
         const result = await fetchBarangList();
         if (isMounted) {
-          setBarangList(result.data);
-          setDataSource(result.source);
+          if (result.error) {
+            setBarangList([]);
+            setError(result.error);
+          } else {
+            setBarangList(result.data);
+            setError(null);
+          }
         }
-      } catch (error) {
-        console.warn('Gagal memuat barang:', error);
+      } catch (err: any) {
+        console.log('API Error: ', err);
+        if (isMounted) {
+          setBarangList([]);
+          setError({
+            kind: 'NETWORK_ERROR',
+            title: 'Koneksi Jaringan Gagal',
+            message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
+          });
+        }
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -95,30 +138,26 @@ export default function BarangScreen() {
   }, []);
 
   // -----------------------------------------------------------------------
-  // 3. PENERAPAN EFFECT (useEffect - Effect 2: Reaktif Filter & Search)
-  // Dijalankan setiap kali salah satu dependensi [searchQuery, selectedCategory, barangList] berubah.
-  // Ini mendemonstrasikan fungsi useEffect untuk sinkronisasi state turunan secara otomatis.
+  // 3. EFFECT FILTER & SEARCH (Hanya Berjalan Saat Data 2xx Tersedia)
   // -----------------------------------------------------------------------
   useEffect(() => {
     let result = [...barangList];
 
-    // Filter berdasarkan Kategori
     if (selectedCategory !== 'Semua') {
       result = result.filter((item) => item.kategori === selectedCategory);
     }
 
-    // Filter berdasarkan Kata Kunci Pencarian (Nama, Kode, atau Lokasi Rak)
     if (searchQuery.trim() !== '') {
       const query = searchQuery.toLowerCase().trim();
       result = result.filter(
         (item) =>
           item.nama_barang.toLowerCase().includes(query) ||
           item.kode_barang.toLowerCase().includes(query) ||
-          item.lokasi_rak.toLowerCase().includes(query)
+          item.lokasi_rak.toLowerCase().includes(query) ||
+          (item.deskripsi && item.deskripsi.toLowerCase().includes(query))
       );
     }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFilteredList(result);
   }, [searchQuery, selectedCategory, barangList]);
 
@@ -128,20 +167,27 @@ export default function BarangScreen() {
     await loadData();
   };
 
-  // Kategori dinamis yang diambil dari data barang yang ada
+  // Handler Penggantian Skenario Uji Task 01 (2xx, 4xx, 5xx, Network)
+  const handleChangeMode = async (mode: MockCondition) => {
+    setCurrentMode(mode);
+    setActiveMockCondition(mode);
+    await loadData();
+  };
+
+  // Kategori dinamis
   const availableCategories = ['Semua', ...Array.from(new Set(barangList.map((b) => b.kategori)))];
 
-  // Hitung jumlah status dari list yang sedang ditampilkan
+  // Hitung status stok
   const countAman = filteredList.filter((b) => b.status_stok === 'Aman').length;
   const countMenipis = filteredList.filter((b) => b.status_stok === 'Menipis').length;
   const countHabis = filteredList.filter((b) => b.status_stok === 'Habis').length;
 
-  // Format angka ke format mata uang Rupiah
+  // Format Rupiah
   const formatRupiah = (num: number) => {
     return 'Rp ' + Number(num).toLocaleString('id-ID');
   };
 
-  // Render Item Card untuk FlatList
+  // Render Kartu Barang untuk FlatList
   const renderItem = ({ item }: { item: Barang }) => {
     const isHabis = item.status_stok === 'Habis';
     const isMenipis = item.status_stok === 'Menipis';
@@ -152,28 +198,51 @@ export default function BarangScreen() {
 
     return (
       <View style={styles.card}>
-        {/* Baris Atas: Nama & Status Badge */}
-        <View style={styles.cardHeader}>
-          <Text style={styles.cardTitle} numberOfLines={2}>
-            {item.nama_barang}
-          </Text>
-          <View style={[styles.statusBadge, { backgroundColor: badgeBg }]}>
-            <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
-            <Text style={[styles.statusText, { color: badgeText }]}>{item.status_stok}</Text>
+        <View style={styles.cardMainRow}>
+          {/* Gambar Thumbnail Produk */}
+          <View style={styles.productImageWrapper}>
+            {item.gambar ? (
+              <Image
+                source={{ uri: item.gambar }}
+                style={styles.productImage}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={styles.productImagePlaceholder}>
+                <Feather name="box" size={24} color="#94a3b8" />
+              </View>
+            )}
+            <View style={[styles.statusBadgeOverlay, { backgroundColor: badgeBg }]}>
+              <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
+              <Text style={[styles.statusText, { color: badgeText }]}>{item.status_stok}</Text>
+            </View>
           </View>
-        </View>
 
-        {/* Baris Meta: Kode, Kategori & Lokasi Rak */}
-        <View style={styles.cardMetaRow}>
-          <View style={styles.metaChip}>
-            <Text style={styles.metaChipText}>{item.kode_barang}</Text>
-          </View>
-          <View style={styles.metaChip}>
-            <Text style={styles.metaChipText}>{item.kategori}</Text>
-          </View>
-          <View style={styles.metaChipLocation}>
-            <Feather name="map-pin" size={11} color="#64748b" />
-            <Text style={styles.metaLocationText}>{item.lokasi_rak}</Text>
+          {/* Info Detail Produk */}
+          <View style={styles.cardContentRight}>
+            <View style={styles.cardMetaRow}>
+              <View style={styles.metaChip}>
+                <Text style={styles.metaChipText}>{item.kode_barang}</Text>
+              </View>
+              <View style={styles.metaChip}>
+                <Text style={styles.metaChipText}>{item.kategori}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.cardTitle} numberOfLines={2}>
+              {item.nama_barang}
+            </Text>
+
+            {item.deskripsi ? (
+              <Text style={styles.cardDescription} numberOfLines={2}>
+                {item.deskripsi}
+              </Text>
+            ) : null}
+
+            <View style={styles.metaLocationRow}>
+              <Feather name="map-pin" size={11} color="#64748b" />
+              <Text style={styles.metaLocationText}>{item.lokasi_rak}</Text>
+            </View>
           </View>
         </View>
 
@@ -182,7 +251,6 @@ export default function BarangScreen() {
 
         {/* Baris Informasi Stok & Harga */}
         <View style={styles.cardBottomRow}>
-          {/* Stok Info */}
           <View>
             <Text style={styles.infoLabel}>Jumlah Stok</Text>
             <Text style={[styles.stokValue, isHabis && styles.stokRed, isMenipis && styles.stokOrange]}>
@@ -191,7 +259,6 @@ export default function BarangScreen() {
             <Text style={styles.stokMinimumText}>Min: {item.stok_minimum} {item.satuan}</Text>
           </View>
 
-          {/* Harga Info */}
           <View style={styles.priceContainer}>
             <Text style={styles.infoLabel}>Harga Jual</Text>
             <Text style={styles.priceValue}>{formatRupiah(item.harga_jual)}</Text>
@@ -205,14 +272,9 @@ export default function BarangScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       {/* ----------------------------------------------------------------- */}
-      {/* HEADER SCREEN & TOMBOL NAVIGASI KEMBALI (router.back())           */}
+      {/* HEADER SCREEN & TOMBOL NAVIGASI                                   */}
       {/* ----------------------------------------------------------------- */}
       <View style={styles.topBar}>
-        {/*
-          PERBEDAAN ROUTER:
-          router.back(): Menghapus halaman Barang dari atas tumpukan stack
-          dan kembali ke halaman sebelumnya (Dashboard).
-        */}
         <TouchableOpacity
           style={styles.backButton}
           activeOpacity={0.7}
@@ -227,154 +289,311 @@ export default function BarangScreen() {
           <Text style={styles.headerSubtitle}>Katalog Inventaris EduStock</Text>
         </View>
 
-        {/* Badge Sumber Data (Membedakan Backend PHP XAMPP vs Data Lokal) */}
-        <View
-          style={[
-            styles.sourceBadge,
-            { backgroundColor: dataSource === 'api' ? '#ecfdf5' : '#f1f5f9' },
-          ]}
+        {/* Tombol Toggle Panel Pengujian Rubrik */}
+        <TouchableOpacity
+          style={[styles.testMenuBtn, showTestBar && styles.testMenuBtnActive]}
+          activeOpacity={0.7}
+          onPress={() => setShowTestBar((prev) => !prev)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <View
-            style={[
-              styles.sourceDot,
-              { backgroundColor: dataSource === 'api' ? '#10b981' : '#94a3b8' },
-            ]}
+          <MaterialCommunityIcons
+            name="tune-variant"
+            size={18}
+            color={showTestBar ? '#2563eb' : '#64748b'}
           />
-          <Text
-            style={[
-              styles.sourceText,
-              { color: dataSource === 'api' ? '#047857' : '#475569' },
-            ]}
-          >
-            {dataSource === 'api' ? 'XAMPP API' : 'Lokal JSON'}
-          </Text>
-        </View>
+        </TouchableOpacity>
       </View>
 
       {/* ----------------------------------------------------------------- */}
-      {/* INPUT PENCARIAN (useState searchQuery & Sensor Kamera)            */}
+      {/* PANEL PENGUJIAN SKENARIO TASK 01 - HANDLE API ERROR               */}
+      {/* Mempermudah Mahasiswa Memperagakan 2xx, 4xx, 5xx, Network Error   */}
       {/* ----------------------------------------------------------------- */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchBar}>
-          <Feather name="search" size={17} color="#94a3b8" style={{ marginRight: 8 }} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Cari nama, kode barang, atau lokasi rak..."
-            placeholderTextColor="#94a3b8"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Feather name="x-circle" size={16} color="#94a3b8" style={{ marginRight: 6 }} />
+      {showTestBar && (
+        <View style={styles.testModeBar}>
+          <View style={styles.testModeHeader}>
+            <Text style={styles.testModeLabel}>PILIH RESPON API UNTUK PENGUJIAN:</Text>
+            <TouchableOpacity
+              onPress={() => setShowTestBar(false)}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            >
+              <Feather name="x" size={13} color="#94a3b8" />
             </TouchableOpacity>
-          )}
-          {/* Tombol Sensor Kamera (Scan Barcode) */}
-          <TouchableOpacity
-            style={styles.scanCameraIconBtn}
-            activeOpacity={0.7}
-            onPress={() => router.push('/scanner')}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.testModeChips}
           >
-            <Feather name="camera" size={18} color="#2563eb" />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* FILTER KATEGORI (useState selectedCategory)                       */}
-      {/* ----------------------------------------------------------------- */}
-      <View style={styles.categoriesContainer}>
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={availableCategories}
-          keyExtractor={(item) => item}
-          contentContainerStyle={styles.categoryList}
-          renderItem={({ item }) => {
-            const isSelected = selectedCategory === item;
-            return (
-              <TouchableOpacity
-                style={[styles.categoryPill, isSelected && styles.categoryPillActive]}
-                activeOpacity={0.7}
-                onPress={() => setSelectedCategory(item)}
+            {/* Opsi 1: 2xx Success */}
+            <TouchableOpacity
+              style={[
+                styles.testChip,
+                currentMode === '2xx' && styles.testChipActive2xx,
+              ]}
+              activeOpacity={0.7}
+              onPress={() => handleChangeMode('2xx')}
+            >
+              <MaterialCommunityIcons
+                name="check-circle"
+                size={14}
+                color={currentMode === '2xx' ? '#ffffff' : '#16a34a'}
+              />
+              <Text
+                style={[
+                  styles.testChipText,
+                  currentMode === '2xx' && styles.testChipTextActive,
+                ]}
               >
-                <Text
-                  style={[
-                    styles.categoryPillText,
-                    isSelected && styles.categoryPillTextActive,
-                  ]}
-                >
-                  {item}
-                </Text>
-              </TouchableOpacity>
-            );
-          }}
-        />
-      </View>
+                2xx (Sukses)
+              </Text>
+            </TouchableOpacity>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* BAR RINGKASAN HASIL FILTER (Reaktif dari useState & useEffect)    */}
-      {/* ----------------------------------------------------------------- */}
-      <View style={styles.summaryBar}>
-        <Text style={styles.summaryCountText}>
-          Ditemukan: <Text style={styles.boldText}>{filteredList.length}</Text> dari {barangList.length} barang
-        </Text>
-        <View style={styles.miniStatsRow}>
-          <View style={[styles.miniDot, { backgroundColor: '#22c55e' }]} />
-          <Text style={styles.miniStatText}>{countAman}</Text>
-          <View style={[styles.miniDot, { backgroundColor: '#f59e0b', marginLeft: 6 }]} />
-          <Text style={styles.miniStatText}>{countMenipis}</Text>
-          <View style={[styles.miniDot, { backgroundColor: '#ef4444', marginLeft: 6 }]} />
-          <Text style={styles.miniStatText}>{countHabis}</Text>
+            {/* Opsi 2: 4xx Client Error */}
+            <TouchableOpacity
+              style={[
+                styles.testChip,
+                currentMode === '4xx' && styles.testChipActive4xx,
+              ]}
+              activeOpacity={0.7}
+              onPress={() => handleChangeMode('4xx')}
+            >
+              <MaterialCommunityIcons
+                name="alert-circle"
+                size={14}
+                color={currentMode === '4xx' ? '#ffffff' : '#ea580c'}
+              />
+              <Text
+                style={[
+                  styles.testChipText,
+                  currentMode === '4xx' && styles.testChipTextActive,
+                ]}
+              >
+                4xx (Client Error)
+              </Text>
+            </TouchableOpacity>
+
+            {/* Opsi 3: 5xx Server Error */}
+            <TouchableOpacity
+              style={[
+                styles.testChip,
+                currentMode === '5xx' && styles.testChipActive5xx,
+              ]}
+              activeOpacity={0.7}
+              onPress={() => handleChangeMode('5xx')}
+            >
+              <MaterialCommunityIcons
+                name="server"
+                size={14}
+                color={currentMode === '5xx' ? '#ffffff' : '#dc2626'}
+              />
+              <Text
+                style={[
+                  styles.testChipText,
+                  currentMode === '5xx' && styles.testChipTextActive,
+                ]}
+              >
+                5xx (Server Error)
+              </Text>
+            </TouchableOpacity>
+
+            {/* Opsi 4: Request Gagal / Network Error */}
+            <TouchableOpacity
+              style={[
+                styles.testChip,
+                currentMode === 'network' && styles.testChipActiveNetwork,
+              ]}
+              activeOpacity={0.7}
+              onPress={() => handleChangeMode('network')}
+            >
+              <MaterialCommunityIcons
+                name="wifi-off"
+                size={14}
+                color={currentMode === 'network' ? '#ffffff' : '#475569'}
+              />
+              <Text
+                style={[
+                  styles.testChipText,
+                  currentMode === 'network' && styles.testChipTextActive,
+                ]}
+              >
+                Request Gagal
+              </Text>
+            </TouchableOpacity>
+
+            {/* Opsi 5: Real Backend API */}
+            <TouchableOpacity
+              style={[
+                styles.testChip,
+                currentMode === 'none' && styles.testChipActiveReal,
+              ]}
+              activeOpacity={0.7}
+              onPress={() => handleChangeMode('none')}
+            >
+              <MaterialCommunityIcons
+                name="api"
+                size={14}
+                color={currentMode === 'none' ? '#ffffff' : '#2563eb'}
+              />
+              <Text
+                style={[
+                  styles.testChipText,
+                  currentMode === 'none' && styles.testChipTextActive,
+                ]}
+              >
+                Real Backend
+              </Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
-      </View>
+      )}
 
       {/* ----------------------------------------------------------------- */}
-      {/* DAFTAR BARANG (FlatList dengan Pull-to-Refresh)                  */}
+      {/* BODY SCREEN: MENAMPILKAN KONDISI SESUAI RUBRIK TASK 01            */}
       {/* ----------------------------------------------------------------- */}
+
+      {/* KONDISI 1: LOADING STATE (Sesuai Slide Rubrik) */}
       {isLoading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color="#2563eb" />
-          <Text style={styles.loadingMessage}>Memuat katalog barang...</Text>
+          <Text style={styles.loadingTitle}>Memuat data...</Text>
+          <Text style={styles.loadingSubtitle}>Mohon tunggu sebentar</Text>
+        </View>
+      ) : error ? (
+        /* KONDISI 2: ERROR STATE (4xx Client Error / 5xx Server Error / Request Gagal) */
+        <View style={styles.errorStateContainer}>
+          {/* Ikon Lingkaran Visual Sesuai Mockup Slide Tugas */}
+          <View
+            style={[
+              styles.errorIconCircle,
+              error.kind === '4xx' && styles.errorIconCircle4xx,
+              error.kind === '5xx' && styles.errorIconCircle5xx,
+              error.kind === 'NETWORK_ERROR' && styles.errorIconCircleNetwork,
+            ]}
+          >
+            {error.kind === '4xx' ? (
+              <MaterialCommunityIcons name="emoticon-sad-outline" size={62} color="#ea580c" />
+            ) : error.kind === '5xx' ? (
+              <MaterialCommunityIcons name="server-network" size={56} color="#dc2626" />
+            ) : (
+              <MaterialCommunityIcons name="wifi-off" size={56} color="#475569" />
+            )}
+          </View>
+
+          {/* Judul & Pesan Kesalahan Jelas Sesuai Slide Tugas */}
+          <Text style={styles.errorStateTitle}>{error.title}</Text>
+          <Text style={styles.errorStateMessage}>{error.message}</Text>
+
+          {/* [Rubrik]: Terdapat tombol Coba Lagi (Retry Button) Berwarna Merah */}
+          <TouchableOpacity
+            style={styles.retryButton}
+            activeOpacity={0.8}
+            onPress={loadData}
+          >
+            <Text style={styles.retryButtonText}>Coba Lagi</Text>
+          </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
-          data={filteredList}
-          keyExtractor={(item) => String(item.id)}
-          renderItem={renderItem}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefreshing}
-              onRefresh={onRefresh}
-              colors={['#2563eb']}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Feather name="inbox" size={36} color="#94a3b8" />
-              </View>
-              <Text style={styles.emptyTitle}>Tidak ada barang yang cocok</Text>
-              <Text style={styles.emptySubtitle}>
-                Coba gunakan kata kunci lain atau ubah filter kategori.
-              </Text>
-              {(searchQuery.length > 0 || selectedCategory !== 'Semua') && (
-                <TouchableOpacity
-                  style={styles.resetFilterBtn}
-                  onPress={() => {
-                    setSearchQuery('');
-                    setSelectedCategory('Semua');
-                  }}
-                >
-                  <Text style={styles.resetFilterText}>Reset Pencarian & Filter</Text>
+        /* KONDISI 3: SUCCESS (2xx) - Data HANYA ditampilkan ketika request berhasil */
+        <>
+          {/* Input Pencarian & Scan Kamera */}
+          <View style={styles.searchSection}>
+            <View style={styles.searchBar}>
+              <Feather name="search" size={17} color="#94a3b8" style={{ marginRight: 8 }} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Cari nama, kode barang, atau spesifikasi..."
+                placeholderTextColor="#94a3b8"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Feather name="x-circle" size={16} color="#94a3b8" style={{ marginRight: 6 }} />
                 </TouchableOpacity>
               )}
+              <TouchableOpacity
+                style={styles.scanCameraIconBtn}
+                activeOpacity={0.7}
+                onPress={() => router.push('/scanner')}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Feather name="camera" size={18} color="#2563eb" />
+              </TouchableOpacity>
             </View>
-          }
-        />
+          </View>
+
+          {/* Filter Kategori */}
+          <View style={styles.categoriesContainer}>
+            <FlatList
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              data={availableCategories}
+              keyExtractor={(item) => item}
+              contentContainerStyle={styles.categoryList}
+              renderItem={({ item }) => {
+                const isSelected = selectedCategory === item;
+                return (
+                  <TouchableOpacity
+                    style={[styles.categoryPill, isSelected && styles.categoryPillActive]}
+                    activeOpacity={0.7}
+                    onPress={() => setSelectedCategory(item)}
+                  >
+                    <Text
+                      style={[
+                        styles.categoryPillText,
+                        isSelected && styles.categoryPillTextActive,
+                      ]}
+                    >
+                      {item}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+
+          {/* Bar Ringkasan */}
+          <View style={styles.summaryBar}>
+            <Text style={styles.summaryCountText}>
+              Ditemukan: <Text style={styles.boldText}>{filteredList.length}</Text> dari {barangList.length} barang
+            </Text>
+            <View style={styles.miniStatsRow}>
+              <View style={[styles.miniDot, { backgroundColor: '#22c55e' }]} />
+              <Text style={styles.miniStatText}>{countAman}</Text>
+              <View style={[styles.miniDot, { backgroundColor: '#f59e0b', marginLeft: 6 }]} />
+              <Text style={styles.miniStatText}>{countMenipis}</Text>
+              <View style={[styles.miniDot, { backgroundColor: '#ef4444', marginLeft: 6 }]} />
+              <Text style={styles.miniStatText}>{countHabis}</Text>
+            </View>
+          </View>
+
+          {/* Daftar Barang FlatList dengan Pull to Refresh */}
+          <FlatList
+            data={filteredList}
+            keyExtractor={(item) => String(item.id)}
+            renderItem={renderItem}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshing}
+                onRefresh={onRefresh}
+                colors={['#2563eb']}
+              />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <View style={styles.emptyIconCircle}>
+                  <Feather name="inbox" size={36} color="#94a3b8" />
+                </View>
+                <Text style={styles.emptyTitle}>Tidak ada barang yang cocok</Text>
+                <Text style={styles.emptySubtitle}>
+                  Coba gunakan kata kunci lain atau ubah filter kategori.
+                </Text>
+              </View>
+            }
+          />
+        </>
       )}
 
       {/* Bottom Sticky Action Bar */}
@@ -393,7 +612,7 @@ export default function BarangScreen() {
 }
 
 // ==========================================
-// STYLESHEET (Barang Screen)
+// STYLESHEET
 // ==========================================
 const styles = StyleSheet.create({
   safeArea: {
@@ -432,23 +651,179 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginTop: 1,
   },
-  sourceBadge: {
+  testMenuBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  testMenuBtnActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+
+  // --------------------------------------------------
+  // Bar Pengujian Mode Respon Task 01
+  // --------------------------------------------------
+  testModeBar: {
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
+  testModeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 6,
+  },
+  testModeLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#64748b',
+    letterSpacing: 0.5,
+  },
+  testModeChips: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  testChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 18,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    gap: 6,
   },
-  sourceDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  testChipActive2xx: {
+    backgroundColor: '#16a34a',
+    borderColor: '#16a34a',
   },
-  sourceText: {
-    fontSize: 10,
+  testChipActive4xx: {
+    backgroundColor: '#ea580c',
+    borderColor: '#ea580c',
+  },
+  testChipActive5xx: {
+    backgroundColor: '#dc2626',
+    borderColor: '#dc2626',
+  },
+  testChipActiveNetwork: {
+    backgroundColor: '#475569',
+    borderColor: '#475569',
+  },
+  testChipActiveReal: {
+    backgroundColor: '#2563eb',
+    borderColor: '#2563eb',
+  },
+  testChipText: {
+    fontSize: 11,
     fontWeight: '700',
+    color: '#475569',
   },
+  testChipTextActive: {
+    color: '#ffffff',
+  },
+
+  // --------------------------------------------------
+  // State 1: Loading
+  // --------------------------------------------------
+  centerContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 30,
+  },
+  loadingTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginTop: 14,
+  },
+  loadingSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 4,
+  },
+
+  // --------------------------------------------------
+  // State 2: Error (Sesuai Mockup Slide Rubrik)
+  // --------------------------------------------------
+  errorStateContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 40,
+  },
+  errorIconCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  errorIconCircle4xx: {
+    backgroundColor: '#fff7ed',
+    borderWidth: 2,
+    borderColor: '#fed7aa',
+  },
+  errorIconCircle5xx: {
+    backgroundColor: '#fef2f2',
+    borderWidth: 2,
+    borderColor: '#fecaca',
+  },
+  errorIconCircleNetwork: {
+    backgroundColor: '#f1f5f9',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+  },
+  errorStateTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0f172a',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  errorStateMessage: {
+    fontSize: 13,
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 28,
+  },
+  retryButton: {
+    width: '100%',
+    maxWidth: 280,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#ef4444',
+    borderRadius: 12,
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  retryButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+
+  // --------------------------------------------------
+  // State 3: Success (2xx)
+  // --------------------------------------------------
   searchSection: {
     paddingHorizontal: 16,
     paddingTop: 12,
@@ -556,27 +931,42 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 2,
   },
-  cardHeader: {
+  cardMainRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginBottom: 8,
+    gap: 12,
   },
-  cardTitle: {
+  productImageWrapper: {
+    width: 90,
+    height: 90,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    overflow: 'hidden',
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  productImage: {
+    width: '100%',
+    height: '100%',
+  },
+  productImagePlaceholder: {
     flex: 1,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0f172a',
-    lineHeight: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f8fafc',
   },
-  statusBadge: {
+  statusBadgeOverlay: {
+    position: 'absolute',
+    bottom: 3,
+    left: 3,
+    right: 3,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    gap: 4,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    borderRadius: 6,
+    gap: 3,
   },
   statusDot: {
     width: 5,
@@ -584,15 +974,37 @@ const styles = StyleSheet.create({
     borderRadius: 2.5,
   },
   statusText: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '700',
+  },
+  cardContentRight: {
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  cardTitle: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#0f172a',
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  cardDescription: {
+    fontSize: 11,
+    color: '#64748b',
+    lineHeight: 15,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  metaLocationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   cardMetaRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 6,
-    marginBottom: 10,
   },
   metaChip: {
     backgroundColor: '#f8fafc',
@@ -606,15 +1018,6 @@ const styles = StyleSheet.create({
     fontSize: 10.5,
     fontWeight: '600',
     color: '#64748b',
-  },
-  metaChipLocation: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    gap: 4,
   },
   metaLocationText: {
     fontSize: 10.5,
@@ -671,18 +1074,6 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     marginTop: 2,
   },
-  centerContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 30,
-    gap: 12,
-  },
-  loadingMessage: {
-    fontSize: 13,
-    color: '#64748b',
-    fontWeight: '600',
-  },
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -709,20 +1100,6 @@ const styles = StyleSheet.create({
     color: '#64748b',
     textAlign: 'center',
     lineHeight: 18,
-    marginBottom: 16,
-  },
-  resetFilterBtn: {
-    backgroundColor: '#eff6ff',
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  resetFilterText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#1d4ed8',
   },
   bottomBar: {
     backgroundColor: '#ffffff',

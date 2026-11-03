@@ -27,6 +27,8 @@ export interface Barang {
   harga_beli: number;
   harga_jual: number;
   lokasi_rak: string;
+  gambar?: string;
+  deskripsi?: string;
   status_stok?: StatusStok;
 }
 
@@ -67,3 +69,20 @@ export interface LoginResult {
   session?: AuthSession;
 }
 
+// ==========================================
+// TIPE & STRUKTUR TASK 01 - HANDLE API ERROR
+// Memenuhi Rubrik: 2xx (Success), 4xx (Client Error), 5xx (Server Error), Request Gagal
+// ==========================================
+export type ApiErrorKind = '4xx' | '5xx' | 'NETWORK_ERROR';
+
+export interface AppApiError {
+  kind: ApiErrorKind;
+  statusCode?: number;
+  title: string;
+  message: string;
+}
+
+export interface FetchBarangResult {
+  data: Barang[];
+  error?: AppApiError | null;
+}

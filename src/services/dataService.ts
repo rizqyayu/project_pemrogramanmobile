@@ -1,10 +1,14 @@
+import NetInfo from '@react-native-community/netinfo';
 import rawInventoryData from '../data/inventoryData.json';
 import {
   Barang,
   TransaksiStok,
   InventorySummary,
   StatusStok,
+  AppApiError,
+  FetchBarangResult,
 } from '../types';
+import { getAuthHeader } from './authService';
 
 /**
  * =========================================================================
@@ -50,6 +54,8 @@ export function mapJsonToBarangList(rawList: any[]): Barang[] {
       harga_beli: Number(raw.harga_beli ?? 0),
       harga_jual: Number(raw.harga_jual ?? 0),
       lokasi_rak: String(raw.lokasi_rak || 'Gudang Utama'),
+      gambar: raw.gambar || raw.image_url || undefined,
+      deskripsi: raw.deskripsi ? String(raw.deskripsi) : undefined,
       status_stok: status,
     };
 
@@ -173,61 +179,205 @@ export function getLoadedInventoryData() {
 
 /**
  * =========================================================================
- * INTEGRASI BACKEND PHP & MYSQL (XAMPP) DENGAN FALLBACK OTOMATIS
- * Memenuhi kriteria: Memuat data dari API & penanganan error/offline
+ * TASK 01 - HANDLE API ERROR (MOBILE PROGRAMMING)
+ * Memenuhi Kriteria Rubrik Tugas:
+ * 1. 2xx: Request berhasil dan data diterima -> Data ditampilkan
+ * 2. 4xx: Kesalahan dari sisi client (400, 401, 403, 404) -> Tampilan Client Error
+ * 3. 5xx: Kesalahan dari sisi server (500, 503) -> Tampilan Server Error
+ * 4. Request Gagal: Network error atau koneksi gagal -> Tampilan Network Error
+ * 5. Terdapat tombol Coba Lagi (Retry)
+ * 6. Data TIDAK ditampilkan ketika request gagal
  * =========================================================================
  */
 
 // Konfigurasi endpoint API backend PHP XAMPP
-// Jika diuji via Expo Go di smartphone fisik, ganti 'localhost' dengan alamat IP Wi-Fi laptop (contoh: 'http://192.168.1.10/EduStock/backend/api')
 export const API_BASE_URL = 'http://localhost/EduStock/backend/api';
 
+// Mode Uji Skenario Respons (Mempermudah Evaluasi Tugas / Demonstrasi Dosen Sesuai Rubrik Task 01)
+export type MockCondition = 'none' | '2xx' | '4xx' | '5xx' | 'network';
+let activeMockCondition: MockCondition = '2xx'; // Default '2xx' agar katalog produk langsung tampil saat aplikasi dibuka
+
+export function setActiveMockCondition(cond: MockCondition) {
+  activeMockCondition = cond;
+}
+
+export function getActiveMockCondition(): MockCondition {
+  return activeMockCondition;
+}
+
 /**
- * Function Async: Memuat data barang dari API backend PHP XAMPP (barang.php)
- * Menggunakan AbortController untuk timeout agar aplikasi tidak hang saat XAMPP belum aktif.
- * Jika koneksi API gagal atau offline, otomatis fallback ke data lokal JSON
- * sehingga demo aplikasi tetap berjalan 100% lancar dan tanpa error.
+ * Function Async: Mengambil Data Barang dengan Penanganan Lengkap (2xx, 4xx, 5xx, Network Error)
+ * Sesuai Tugas: TASK 01 - HANDLE API ERROR
  */
-export async function fetchBarangList(): Promise<{
-  data: Barang[];
-  source: 'api' | 'local';
-  message: string;
-}> {
+export async function fetchBarangList(): Promise<FetchBarangResult> {
+  // -------------------------------------------------------------------------
+  // SKENARIO UJI SESUAI SLIDE RUBRIK PRAKTIKUM TASK 01
+  // -------------------------------------------------------------------------
+  if (activeMockCondition === '4xx') {
+    // Simulasi delay jaringan realistis agar Loading Spinner terlihat
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    return {
+      data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
+      error: {
+        kind: '4xx',
+        statusCode: 404,
+        title: 'Data Tidak Ditemukan',
+        message: 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.',
+      },
+    };
+  }
+
+  if (activeMockCondition === '5xx') {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    return {
+      data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
+      error: {
+        kind: '5xx',
+        statusCode: 500,
+        title: 'Terjadi Kesalahan pada Server',
+        message: 'Server sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
+      },
+    };
+  }
+
+  if (activeMockCondition === 'network') {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    return {
+      data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
+      error: {
+        kind: 'NETWORK_ERROR',
+        title: 'Koneksi Jaringan Gagal',
+        message: 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau. Periksa koneksi perangkat Anda.',
+      },
+    };
+  }
+
+  if (activeMockCondition === '2xx') {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const list = mapJsonToBarangList(rawInventoryData.barang);
+    return {
+      data: list, // [Rubrik]: Data HANYA ditampilkan saat request berhasil (2xx)
+      error: null,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // PANGGILAN HTTP API NYATA (Backend PHP XAMPP)
+  // -------------------------------------------------------------------------
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5 detik timeout
+    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 detik timeout
 
+    const authHeader = await getAuthHeader();
     const response = await fetch(`${API_BASE_URL}/barang.php`, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
+        ...authHeader,
       },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
 
-    if (response.ok) {
-      const result = await response.json();
-      if (result.success && Array.isArray(result.data)) {
-        const mapped = mapJsonToBarangList(result.data);
-        return {
-          data: mapped,
-          source: 'api',
-          message: 'Berhasil memuat data langsung dari Backend PHP & MySQL (XAMPP).',
-        };
-      }
+    // KONDISI 1: 4xx (Kesalahan dari sisi client: 400, 401, 403, 404)
+    if (response.status >= 400 && response.status < 500) {
+      let customMsg = '';
+      try {
+        const errJson = await response.json();
+        if (errJson?.message) customMsg = errJson.message;
+      } catch {}
+
+      const is404 = response.status === 404;
+      return {
+        data: [], // Data TIDAK ditampilkan saat request gagal
+        error: {
+          kind: '4xx',
+          statusCode: response.status,
+          title: is404 ? 'Data Tidak Ditemukan' : `Kesalahan Klien (${response.status})`,
+          message:
+            customMsg ||
+            (is404
+              ? 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.'
+              : `Permintaan dari aplikasi tidak dapat diproses oleh server (HTTP ${response.status}).`),
+        },
+      };
     }
-  } catch {
-    // API backend XAMPP tidak dapat dihubungi atau timeout (kondisi normal saat demo tanpa server lokal)
+
+    // KONDISI 2: 5xx (Kesalahan dari sisi server: 500, 502, 503)
+    if (response.status >= 500) {
+      let customMsg = '';
+      try {
+        const errJson = await response.json();
+        if (errJson?.message) customMsg = errJson.message;
+      } catch {}
+
+      return {
+        data: [], // Data TIDAK ditampilkan saat request gagal
+        error: {
+          kind: '5xx',
+          statusCode: response.status,
+          title: 'Terjadi Kesalahan pada Server',
+          message:
+            customMsg ||
+            'Server sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
+        },
+      };
+    }
+
+    // Jika HTTP status tidak ok
+    if (!response.ok) {
+      return {
+        data: [],
+        error: {
+          kind: '5xx',
+          statusCode: response.status,
+          title: 'Terjadi Kesalahan',
+          message: `Server mengembalikan status respons HTTP ${response.status}.`,
+        },
+      };
+    }
+
+    // KONDISI 3: 2xx (Request Berhasil dan Data Diterima)
+    const rawText = await response.text();
+    let result: any;
+    try {
+      result = JSON.parse(rawText);
+    } catch {
+      return {
+        data: [],
+        error: {
+          kind: '5xx',
+          statusCode: 500,
+          title: 'Format Respons Tidak Sesuai',
+          message: 'Server mengembalikan respons yang bukan berformat JSON yang valid.',
+        },
+      };
+    }
+
+    const rawList = Array.isArray(result)
+      ? result
+      : Array.isArray(result.data)
+      ? result.data
+      : [];
+
+    const mapped = mapJsonToBarangList(rawList);
+    return {
+      data: mapped, // Data HANYA ditampilkan saat request berhasil (2xx)
+      error: null,
+    };
+
+  } catch (err: any) {
+    // KONDISI 4: REQUEST GAGAL (Tidak ada koneksi internet / network error / timeout)
+    const isTimeout = err?.name === 'AbortError';
+    return {
+      data: [], // Data TIDAK ditampilkan saat request gagal
+      error: {
+        kind: 'NETWORK_ERROR',
+        title: isTimeout ? 'Waktu Permintaan Habis' : 'Koneksi Jaringan Gagal',
+        message: isTimeout
+          ? 'Waktu tunggu permintaan ke server telah habis (Request Timeout). Server backend tidak merespons.'
+          : 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau. Periksa koneksi perangkat Anda.',
+      },
+    };
   }
-
-  // Fallback aman ke data lokal JSON
-  const localList = mapJsonToBarangList(rawInventoryData.barang);
-  return {
-    data: localList,
-    source: 'local',
-    message: 'Memuat data inventaris lokal (Backend XAMPP offline atau perangkat berbeda jaringan).',
-  };
 }
-
-
