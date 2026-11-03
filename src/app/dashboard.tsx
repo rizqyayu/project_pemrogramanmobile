@@ -1,4 +1,5 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -219,6 +220,16 @@ export default function DashboardScreen() {
     }
   }, []);
 
+  // -----------------------------------------------------------------------
+  // OFFLINE HANDLING & REKONEKSI OTOMATIS
+  // -----------------------------------------------------------------------
+  const { isOffline } = useNetworkStatus({
+    onReconnect: async () => {
+      await loadDashboardData();
+    },
+    cooldownMs: 4000,
+  });
+
   useEffect(() => {
     let isMounted = true;
     async function init() {
@@ -334,6 +345,16 @@ export default function DashboardScreen() {
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} colors={['#2563eb']} />
         }
       >
+        {/* Indikator Kondisi Offline di Dashboard */}
+        {isOffline && (
+          <View style={styles.offlineAlertCard}>
+            <Feather name="wifi-off" size={14} color="#b45309" style={{ marginRight: 8 }} />
+            <Text style={styles.offlineAlertText}>
+              Mode Offline: Koneksi internet tidak tersedia. Menampilkan data inventaris lokal.
+            </Text>
+          </View>
+        )}
+
         {/* Dark Greeting Card */}
         <View style={styles.darkGreetingCard}>
           <View style={styles.darkCardTopRow}>
@@ -1659,5 +1680,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#ffffff',
+  },
+  offlineAlertCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 14,
+  },
+  offlineAlertText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#92400e',
+    fontWeight: '500',
+    lineHeight: 18,
   },
 });

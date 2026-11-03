@@ -1,6 +1,7 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { OfflineBanner } from '../components/OfflineBanner';
 
 /**
  * =========================================================================
@@ -22,6 +23,8 @@ export default function RootLayout() {
     <>
       {/* Mengatur warna indikator status bar perangkat */}
       <StatusBar style="dark" />
+      {/* Indikator Global Offline Handling di seluruh aplikasi */}
+      <OfflineBanner />
 
       {/* Stack Navigator membungkus semua halaman aplikasi */}
       <Stack
