@@ -64,74 +64,74 @@ export default function BarangScreen() {
   const isFetchingRef = useRef<boolean>(false);
 
   // -----------------------------------------------------------------------
-  // 2. FUNGSI LOAD DATA DENGAN ERROR HANDLING
+  // 2. FUNGSI LOAD DATA DENGAN PROMISE .then(), .catch(), & .finally()
+  // (Memenuhi Rubrik Pekan Demo: Penggunaan fungsi .then())
   // -----------------------------------------------------------------------
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(() => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     setIsLoading(true);
     setError(null);
 
-    try {
-      const result = await fetchBarangList();
-      if (result.error) {
-        // [Rubrik]: Data TIDAK ditampilkan ketika request gagal
+    // Pemanggilan fungsi Promise dengan rantai .then() dan .catch()
+    fetchBarangList()
+      .then((result) => {
+        if (result.error) {
+          // [Rubrik]: Data TIDAK ditampilkan ketika request gagal
+          setBarangList([]);
+          setError(result.error);
+        } else {
+          // [Rubrik]: Data HANYA ditampilkan ketika request berhasil (2xx)
+          setBarangList(result.data);
+          setError(null);
+        }
+      })
+      .catch((err: any) => {
+        console.log('API Error: ', err);
         setBarangList([]);
-        setError(result.error);
-      } else {
-        // [Rubrik]: Data HANYA ditampilkan ketika request berhasil (2xx)
-        setBarangList(result.data);
-        setError(null);
-      }
-    } catch (err: any) {
-      console.log('API Error: ', err);
-      setBarangList([]);
-      setError({
-        kind: 'NETWORK_ERROR',
-        title: 'Koneksi Jaringan Gagal',
-        message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
+        setError({
+          kind: 'NETWORK_ERROR',
+          title: 'Koneksi Jaringan Gagal',
+          message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
+        });
+      })
+      .finally(() => {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        isFetchingRef.current = false;
       });
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-      isFetchingRef.current = false;
-    }
   }, []);
 
-  // Inisialisasi saat pertama kali layar dibuka
+  // Inisialisasi saat pertama kali layar dibuka menggunakan .then()
   useEffect(() => {
     let isMounted = true;
-    async function init() {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const result = await fetchBarangList();
-        if (isMounted) {
-          if (result.error) {
-            setBarangList([]);
-            setError(result.error);
-          } else {
-            setBarangList(result.data);
-            setError(null);
-          }
-        }
-      } catch (err: any) {
-        console.log('API Error: ', err);
-        if (isMounted) {
+
+    fetchBarangList()
+      .then((result) => {
+        if (!isMounted) return;
+        if (result.error) {
           setBarangList([]);
-          setError({
-            kind: 'NETWORK_ERROR',
-            title: 'Koneksi Jaringan Gagal',
-            message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
-          });
+          setError(result.error);
+        } else {
+          setBarangList(result.data);
+          setError(null);
         }
-      } finally {
+      })
+      .catch((err: any) => {
+        if (!isMounted) return;
+        console.log('API Error: ', err);
+        setBarangList([]);
+        setError({
+          kind: 'NETWORK_ERROR',
+          title: 'Koneksi Jaringan Gagal',
+          message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
+        });
+      })
+      .finally(() => {
         if (isMounted) {
           setIsLoading(false);
         }
-      }
-    }
-    init();
+      });
 
     return () => {
       isMounted = false;
