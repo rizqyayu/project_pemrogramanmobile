@@ -1,4 +1,3 @@
-import NetInfo from '@react-native-community/netinfo';
 import rawInventoryData from '../data/inventoryData.json';
 import {
   Barang,
@@ -206,178 +205,199 @@ export function getActiveMockCondition(): MockCondition {
 }
 
 /**
- * Function Async: Mengambil Data Barang dengan Penanganan Lengkap (2xx, 4xx, 5xx, Network Error)
- * Sesuai Tugas: TASK 01 - HANDLE API ERROR
+ * =========================================================================
+ * FUNGSI PROMISE EKSPLISIT DENGAN RESOLVE & REJECT
+ * (Memenuhi Rubrik: Menggunakan fungsi .then(), .resolve(), dan .reject())
+ * =========================================================================
  */
-export async function fetchBarangList(): Promise<FetchBarangResult> {
+
+/**
+ * Custom Promise: Mengambil data barang menggunakan konstruktor Promise mandiri
+ * Memperagakan fungsi resolve() saat sukses (2xx) dan reject() saat gagal (4xx, 5xx, Network)
+ */
+export function fetchBarangWithPromise(condition?: MockCondition): Promise<Barang[]> {
+  return new Promise<Barang[]>((resolve, reject) => {
+    const cond = condition || activeMockCondition;
+
+    setTimeout(() => {
+      if (cond === '4xx') {
+        // [Rubrik Demo]: Memperagakan fungsi reject() saat Client Error (4xx / 404)
+        reject({
+          kind: '4xx',
+          statusCode: 404,
+          title: 'Data Tidak Ditemukan',
+          message: 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.',
+        });
+      } else if (cond === '5xx') {
+        // [Rubrik Demo]: Memperagakan fungsi reject() saat Server Error (5xx / 500)
+        reject({
+          kind: '5xx',
+          statusCode: 500,
+          title: 'Terjadi Kesalahan pada Server',
+          message: 'Server sedang mengalami gangguan internal. Silakan coba beberapa saat lagi.',
+        });
+      } else if (cond === 'network') {
+        // [Rubrik Demo]: Memperagakan fungsi reject() saat Network Error
+        reject({
+          kind: 'NETWORK_ERROR',
+          title: 'Koneksi Jaringan Gagal',
+          message: 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau. Periksa koneksi perangkat Anda.',
+        });
+      } else {
+        // [Rubrik Demo]: Memperagakan fungsi resolve() saat request berhasil (2xx)
+        const list = mapJsonToBarangList(rawInventoryData.barang);
+        resolve(list);
+      }
+    }, 600);
+  });
+}
+
+/**
+ * Custom Promise Helper: Cari Barang Berdasarkan Kode Barcode
+ * Memperagakan pembuatan Custom Promise mandiri dengan resolve() dan reject()
+ */
+export function findBarangByCodePromise(kode: string): Promise<Barang> {
+  return new Promise<Barang>((resolve, reject) => {
+    const barangList = mapJsonToBarangList(rawInventoryData.barang);
+    const found = barangList.find(
+      (b) => b.kode_barang.toLowerCase() === kode.trim().toLowerCase()
+    );
+
+    if (found) {
+      // [Rubrik Demo]: Memperagakan fungsi resolve() saat data ditemukan
+      resolve(found);
+    } else {
+      // [Rubrik Demo]: Memperagakan fungsi reject() saat data tidak ditemukan
+      reject(new Error(`Barang dengan barcode "${kode}" tidak ditemukan di database gudang.`));
+    }
+  });
+}
+
+/**
+ * Function: Mengambil Data Barang dengan Penanganan Lengkap (2xx, 4xx, 5xx, Network Error)
+ * Memperagakan konsumsi Promise menggunakan rantai .then() dan .catch()
+ */
+export function fetchBarangList(): Promise<FetchBarangResult> {
   // -------------------------------------------------------------------------
-  // SKENARIO UJI SESUAI SLIDE RUBRIK PRAKTIKUM TASK 01
+  // SKENARIO UJI MOCK (2xx, 4xx, 5xx, Network) menggunakan .then() dan .catch()
   // -------------------------------------------------------------------------
-  if (activeMockCondition === '4xx') {
-    // Simulasi delay jaringan realistis agar Loading Spinner terlihat
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    return {
-      data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
-      error: {
-        kind: '4xx',
-        statusCode: 404,
-        title: 'Data Tidak Ditemukan',
-        message: 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.',
-      },
-    };
+  if (activeMockCondition !== 'none') {
+    return fetchBarangWithPromise()
+      .then((data: Barang[]) => {
+        // [Rubrik Demo]: Blok .then() menerima data hasil resolve()
+        return {
+          data, // [Rubrik]: Data HANYA ditampilkan saat request berhasil (2xx)
+          error: null,
+        };
+      })
+      .catch((err: any) => {
+        // [Rubrik Demo]: Blok .catch() menangkap error hasil reject()
+        const appError: AppApiError = {
+          kind: err.kind || 'NETWORK_ERROR',
+          statusCode: err.statusCode,
+          title: err.title || 'Koneksi Jaringan Gagal',
+          message: err.message || 'Terjadi kesalahan saat memuat data dari server.',
+        };
+        return {
+          data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
+          error: appError,
+        };
+      });
   }
 
-  if (activeMockCondition === '5xx') {
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    return {
-      data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
-      error: {
-        kind: '5xx',
-        statusCode: 500,
-        title: 'Terjadi Kesalahan pada Server',
-        message: 'Server sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
-      },
-    };
-  }
-
-  if (activeMockCondition === 'network') {
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    return {
-      data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
-      error: {
-        kind: 'NETWORK_ERROR',
-        title: 'Koneksi Jaringan Gagal',
-        message: 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau. Periksa koneksi perangkat Anda.',
-      },
-    };
-  }
-
-  if (activeMockCondition === '2xx') {
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    const list = mapJsonToBarangList(rawInventoryData.barang);
-    return {
-      data: list, // [Rubrik]: Data HANYA ditampilkan saat request berhasil (2xx)
-      error: null,
-    };
-  }
-
   // -------------------------------------------------------------------------
-  // PANGGILAN HTTP API NYATA (Backend PHP XAMPP)
+  // PANGGILAN HTTP API NYATA (Backend PHP XAMPP) menggunakan .then() dan .catch()
   // -------------------------------------------------------------------------
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 detik timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 detik timeout
 
-    const authHeader = await getAuthHeader();
-    const response = await fetch(`${API_BASE_URL}/barang.php`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        ...authHeader,
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+  return getAuthHeader()
+    .then((authHeader) => {
+      return fetch(`${API_BASE_URL}/barang.php`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...authHeader,
+        },
+        signal: controller.signal,
+      });
+    })
+    .then((response) => {
+      clearTimeout(timeoutId);
 
-    // KONDISI 1: 4xx (Kesalahan dari sisi client: 400, 401, 403, 404)
-    if (response.status >= 400 && response.status < 500) {
-      let customMsg = '';
-      try {
-        const errJson = await response.json();
-        if (errJson?.message) customMsg = errJson.message;
-      } catch {}
-
-      const is404 = response.status === 404;
-      return {
-        data: [], // Data TIDAK ditampilkan saat request gagal
-        error: {
+      // KONDISI 1: 4xx (Kesalahan dari sisi client: 400, 401, 403, 404)
+      if (response.status >= 400 && response.status < 500) {
+        return Promise.reject({
           kind: '4xx',
           statusCode: response.status,
-          title: is404 ? 'Data Tidak Ditemukan' : `Kesalahan Klien (${response.status})`,
-          message:
-            customMsg ||
-            (is404
-              ? 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.'
-              : `Permintaan dari aplikasi tidak dapat diproses oleh server (HTTP ${response.status}).`),
-        },
-      };
-    }
+          title: response.status === 404 ? 'Data Tidak Ditemukan' : `Kesalahan Klien (${response.status})`,
+          message: 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.',
+        });
+      }
 
-    // KONDISI 2: 5xx (Kesalahan dari sisi server: 500, 502, 503)
-    if (response.status >= 500) {
-      let customMsg = '';
-      try {
-        const errJson = await response.json();
-        if (errJson?.message) customMsg = errJson.message;
-      } catch {}
-
-      return {
-        data: [], // Data TIDAK ditampilkan saat request gagal
-        error: {
+      // KONDISI 2: 5xx (Kesalahan dari sisi server: 500, 502, 503)
+      if (response.status >= 500) {
+        return Promise.reject({
           kind: '5xx',
           statusCode: response.status,
           title: 'Terjadi Kesalahan pada Server',
-          message:
-            customMsg ||
-            'Server sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
-        },
-      };
-    }
+          message: 'Server sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
+        });
+      }
 
-    // Jika HTTP status tidak ok
-    if (!response.ok) {
-      return {
-        data: [],
-        error: {
+      if (!response.ok) {
+        return Promise.reject({
           kind: '5xx',
           statusCode: response.status,
           title: 'Terjadi Kesalahan',
           message: `Server mengembalikan status respons HTTP ${response.status}.`,
-        },
-      };
-    }
+        });
+      }
 
-    // KONDISI 3: 2xx (Request Berhasil dan Data Diterima)
-    const rawText = await response.text();
-    let result: any;
-    try {
-      result = JSON.parse(rawText);
-    } catch {
-      return {
-        data: [],
-        error: {
+      return response.text();
+    })
+    .then((rawText) => {
+      let result: any;
+      try {
+        result = JSON.parse(rawText);
+      } catch {
+        return Promise.reject({
           kind: '5xx',
           statusCode: 500,
           title: 'Format Respons Tidak Sesuai',
           message: 'Server mengembalikan respons yang bukan berformat JSON yang valid.',
-        },
+        });
+      }
+
+      const rawList = Array.isArray(result)
+        ? result
+        : Array.isArray(result.data)
+        ? result.data
+        : [];
+
+      const mapped = mapJsonToBarangList(rawList);
+      // [Rubrik Demo]: Memperagakan fungsi Promise.resolve()
+      return Promise.resolve({
+        data: mapped,
+        error: null,
+      });
+    })
+    .catch((err: any) => {
+      clearTimeout(timeoutId);
+      const isTimeout = err?.name === 'AbortError';
+      const appError: AppApiError = {
+        kind: err?.kind || 'NETWORK_ERROR',
+        statusCode: err?.statusCode,
+        title: err?.title || (isTimeout ? 'Waktu Permintaan Habis' : 'Koneksi Jaringan Gagal'),
+        message:
+          err?.message ||
+          (isTimeout
+            ? 'Waktu tunggu permintaan ke server telah habis (Request Timeout).'
+            : 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau.'),
       };
-    }
-
-    const rawList = Array.isArray(result)
-      ? result
-      : Array.isArray(result.data)
-      ? result.data
-      : [];
-
-    const mapped = mapJsonToBarangList(rawList);
-    return {
-      data: mapped, // Data HANYA ditampilkan saat request berhasil (2xx)
-      error: null,
-    };
-
-  } catch (err: any) {
-    // KONDISI 4: REQUEST GAGAL (Tidak ada koneksi internet / network error / timeout)
-    const isTimeout = err?.name === 'AbortError';
-    return {
-      data: [], // Data TIDAK ditampilkan saat request gagal
-      error: {
-        kind: 'NETWORK_ERROR',
-        title: isTimeout ? 'Waktu Permintaan Habis' : 'Koneksi Jaringan Gagal',
-        message: isTimeout
-          ? 'Waktu tunggu permintaan ke server telah habis (Request Timeout). Server backend tidak merespons.'
-          : 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau. Periksa koneksi perangkat Anda.',
-      },
-    };
-  }
+      return {
+        data: [],
+        error: appError,
+      };
+    });
 }
