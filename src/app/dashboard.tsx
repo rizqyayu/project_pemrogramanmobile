@@ -690,6 +690,29 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Validasi Lokasi Gudang & Geofencing (EduStock Location) */}
+        <TouchableOpacity
+          style={styles.locationBannerCard}
+          activeOpacity={0.8}
+          onPress={() => router.push('/lokasi' as any)}
+        >
+          <View style={styles.locationBannerLeft}>
+            <View style={styles.locationBannerIconCircle}>
+              <MaterialCommunityIcons name="map-marker-radius" size={20} color="#7c3aed" />
+            </View>
+            <View style={styles.locationBannerTextWrap}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.locationBannerTag}>ZONA GUDANG</Text>
+                <Text style={styles.locationBannerTitle}>Lokasi & Presensi Gudang</Text>
+              </View>
+              <Text style={styles.locationBannerSub}>
+                Validasi Geofence Staf & Otorisasi Mutasi Stok
+              </Text>
+            </View>
+          </View>
+          <Feather name="chevron-right" size={18} color="#7c3aed" />
+        </TouchableOpacity>
+
         {/* Aktivitas Stok Terbaru */}
         <View style={styles.activityHeaderRow}>
           <Text style={styles.sectionTitle}>Aktivitas Stok Terbaru</Text>
@@ -1517,7 +1540,18 @@ export default function DashboardScreen() {
                     onPress={handleTestAuthHeader}
                   >
                     <Feather name="shield" size={18} color="#0891b2" />
-                    <Text style={styles.menuShortcutText}>Uji Bearer JWT</Text>
+                    <Text style={styles.menuShortcutText}>Uji Bearer</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.menuShortcutBtn}
+                    onPress={() => {
+                      setIsMenuModalVisible(false);
+                      router.push('/lokasi' as any);
+                    }}
+                  >
+                    <Feather name="map-pin" size={18} color="#7c3aed" />
+                    <Text style={styles.menuShortcutText}>Lokasi Gudang</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -2824,5 +2858,58 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 13,
     fontWeight: '700',
+  },
+  // Task 03 - Location Intelligence Card
+  locationBannerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#f5f3ff',
+    borderWidth: 1,
+    borderColor: '#ddd6fe',
+    borderRadius: 16,
+    padding: 12,
+    marginTop: 12,
+  },
+  locationBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  locationBannerIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#7c3aed',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  locationBannerTextWrap: {
+    flex: 1,
+  },
+  locationBannerTag: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: '#ffffff',
+    backgroundColor: '#7c3aed',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+  },
+  locationBannerTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  locationBannerSub: {
+    fontSize: 10.5,
+    color: '#64748b',
+    marginTop: 2,
   },
 });

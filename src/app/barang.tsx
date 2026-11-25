@@ -58,7 +58,7 @@ export default function BarangScreen() {
 
   // Mode Pengujian Rubrik Task 01: '2xx' | '4xx' | '5xx' | 'network' | 'none'
   const [currentMode, setCurrentMode] = useState<MockCondition>(() => getActiveMockCondition());
-  const [showTestBar, setShowTestBar] = useState<boolean>(true); // Toggle panel uji evaluasi tugas
+  const [showTestBar, setShowTestBar] = useState<boolean>(false); // Default tersembunyi agar tampilan bersih & rapi
 
   // Ref penanda proses fetch sedang berjalan untuk proteksi anti-loop
   const isFetchingRef = useRef<boolean>(false);
@@ -322,7 +322,12 @@ export default function BarangScreen() {
       {showTestBar && (
         <View style={styles.testModeBar}>
           <View style={styles.testModeHeader}>
-            <Text style={styles.testModeLabel}>PILIH RESPON API UNTUK PENGUJIAN:</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.testModeLabel}>PILIH RESPON API UNTUK PENGUJIAN:</Text>
+              <View style={styles.publicApiTag}>
+                <Text style={styles.publicApiTagText}>Public API (Online)</Text>
+              </View>
+            </View>
             <TouchableOpacity
               onPress={() => setShowTestBar(false)}
               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
@@ -431,7 +436,7 @@ export default function BarangScreen() {
               </Text>
             </TouchableOpacity>
 
-            {/* Opsi 5: Real Backend API */}
+            {/* Opsi 5: Public API Live */}
             <TouchableOpacity
               style={[
                 styles.testChip,
@@ -441,7 +446,7 @@ export default function BarangScreen() {
               onPress={() => handleChangeMode('none')}
             >
               <MaterialCommunityIcons
-                name="api"
+                name="cloud-check"
                 size={14}
                 color={currentMode === 'none' ? '#ffffff' : '#2563eb'}
               />
@@ -451,7 +456,7 @@ export default function BarangScreen() {
                   currentMode === 'none' && styles.testChipTextActive,
                 ]}
               >
-                Real Backend
+                API Publik (Live)
               </Text>
             </TouchableOpacity>
           </ScrollView>
@@ -866,6 +871,19 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#64748b',
     letterSpacing: 0.5,
+  },
+  publicApiTag: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  publicApiTagText: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: '#2563eb',
   },
   testModeChips: {
     paddingHorizontal: 16,
