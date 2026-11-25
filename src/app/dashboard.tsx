@@ -1,5 +1,4 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -17,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
 
 // Import Types
 import {
@@ -655,6 +655,8 @@ export default function DashboardScreen() {
             </View>
             <Text style={[styles.actionText, { color: '#7c3aed' }]}>Scan Barcode</Text>
           </TouchableOpacity>
+
+      
 
           {/* Stok Masuk (Aktif Interaktif) */}
           <TouchableOpacity
