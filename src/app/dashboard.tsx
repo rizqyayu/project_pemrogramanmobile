@@ -1,6 +1,8 @@
+
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+
 import {
   ActivityIndicator,
   Modal,
@@ -14,16 +16,19 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { UI, cardShadow, primaryButtonShadow } from '../constants/uiTokens';
+
+import { AccessDeniedView } from '../components/AccessDeniedView';
 import {
-  SoftBlueBackdrop,
   PrimaryGradientButton,
   SecondaryOutlineButton,
+  SoftBlueBackdrop,
 } from '../components/SoftBlueUI';
-import { AccessDeniedView } from '../components/AccessDeniedView';
-import { showAppAlert, showAppConfirm } from '../utils/feedback';
+
+import { cardShadow, primaryButtonShadow, UI } from '../constants/uiTokens';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { showAppAlert, showAppConfirm } from '../utils/feedback';
 
 // Import Types
 import {
@@ -42,12 +47,14 @@ import {
   loginAsDemo,
   logout,
 } from '../services/authService';
+
 import {
   authorizeAction,
   getRoleShortTitle,
   getScopedTransaksiList,
   hasPermission,
 } from '../services/rbacService';
+
 import {
   addManagedUser,
   getStoreSnapshot,
@@ -58,6 +65,7 @@ import {
   toggleUserActiveStatus,
   updateWarehouseConfig,
 } from '../services/inventoryStore';
+
 
 /**
  * =========================================================================

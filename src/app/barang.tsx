@@ -1,35 +1,42 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  TouchableOpacity,
-  FlatList,
-  Platform,
-  StatusBar as RNStatusBar,
-  ActivityIndicator,
-  RefreshControl,
-  Image,
-  ScrollView,
-  Modal,
-} from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
-import { UI, cardShadow } from '../constants/uiTokens';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
 import {
-  SoftBlueBackdrop,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  Modal,
+  Platform,
+  RefreshControl,
+  StatusBar as RNStatusBar,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import {
   PrimaryGradientButton,
   SecondaryOutlineButton,
+  SoftBlueBackdrop,
 } from '../components/SoftBlueUI';
+import { cardShadow, UI } from '../constants/uiTokens';
+
 import { AccessDeniedView } from '../components/AccessDeniedView';
 import { showAppAlert, showAppConfirm } from '../utils/feedback';
 
-import { Barang, AppApiError, AuthSession } from '../types';
+import { AppApiError, AuthSession, Barang } from '../types';
+
 import { getSavedSession } from '../services/authService';
 import { authorizeAction, hasPermission } from '../services/rbacService';
+
 import {
   applyCatalogOverrides,
   createMasterBarang,
@@ -37,12 +44,14 @@ import {
   subscribeInventoryStore,
   updateMasterBarang,
 } from '../services/inventoryStore';
+
 import {
   fetchBarangList,
-  setActiveMockCondition,
   getActiveMockCondition,
   MockCondition,
+  setActiveMockCondition,
 } from '../services/dataService';
+
 
 /**
  * =========================================================================
@@ -595,43 +604,44 @@ export default function BarangScreen() {
             <Text style={styles.errorStateTitle}>{error.title}</Text>
             <Text style={styles.errorStateMessage}>{error.message}</Text>
 
-            <TouchableOpacity style={styles.retryButton} activeOpacity={0.85} onPress={loadData}>
-              <Text style={styles.retryButtonText}>Coba Lagi</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          /* SUCCESS (2xx) */
-          <>
-            <View style={styles.searchRowContainer}>
-              <View style={styles.searchBar}>
-                <Feather name="search" size={16} color={UI.colors.muted} style={{ marginRight: 8 }} />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Cari nama, kode, atau lokasi rak..."
-                  placeholderTextColor={UI.colors.muted}
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                />
-                {searchQuery.length > 0 && (
-                  <TouchableOpacity
-                    onPress={() => setSearchQuery('')}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Feather name="x-circle" size={16} color={UI.colors.muted} />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {canScan && (
-                <TouchableOpacity
-                  style={styles.scanQuickSquareBtn}
-                  activeOpacity={0.8}
-                  onPress={() => router.push('/scanner')}
-                >
-                  <MaterialCommunityIcons name="qrcode-scan" size={19} color={UI.colors.primary} />
+          {/* [Rubrik]: Terdapat tombol Coba Lagi (Retry Button) Berwarna Merah */}
+          <TouchableOpacity
+            style={styles.retryButton}
+            activeOpacity={0.8}
+            onPress={loadData}
+          >
+            <Text style={styles.retryButtonText}>Coba Lagi</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        /* KONDISI 3: SUCCESS (2xx) - Data HANYA ditampilkan ketika request berhasil */
+        <>
+          {/* Input Pencarian & Scan Kamera */}
+          <View style={styles.searchSection}>
+            <View style={styles.searchBar}>
+              <Feather name="search" size={17} color="#94a3b8" style={{ marginRight: 8 }} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Cari nama, kode barang, atau spesifikasi..."
+                placeholderTextColor="#94a3b8"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Feather name="x-circle" size={16} color="#94a3b8" style={{ marginRight: 6 }} />
                 </TouchableOpacity>
               )}
+              <TouchableOpacity
+                style={styles.scanCameraIconBtn}
+                activeOpacity={0.7}
+                onPress={() => router.push('/scanner')}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Feather name="camera" size={18} color="#2563eb" />
+              </TouchableOpacity>
             </View>
+          </View>
 
             <View style={{ marginBottom: 4 }}>
               <FlatList
@@ -1087,6 +1097,21 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     gap: 10,
   },
+
+searchSection: {
+  marginBottom: 16,
+},
+
+scanCameraIconBtn: {
+  width: 40,
+  height: 40,
+  borderRadius: 12,
+  backgroundColor: '#EAF2FF',
+  alignItems: 'center',
+  justifyContent: 'center',
+  marginLeft: 8,
+},
+
   backButton: {
     width: 36,
     height: 36,
