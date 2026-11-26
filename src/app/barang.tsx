@@ -1,32 +1,32 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  TouchableOpacity,
-  FlatList,
-  Platform,
-  StatusBar as RNStatusBar,
-  ActivityIndicator,
-  RefreshControl,
-  Image,
-  ScrollView,
-  Modal,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Image,
+  Modal,
+  Platform,
+  RefreshControl,
+  StatusBar as RNStatusBar,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Import Model Data & Tipe Error
-import { Barang, AppApiError } from '../types';
+import { AppApiError, Barang } from '../types';
 
 // Import Service API
 import {
   fetchBarangList,
-  setActiveMockCondition,
   getActiveMockCondition,
   MockCondition,
+  setActiveMockCondition,
 } from '../services/dataService';
 
 /**
@@ -502,7 +502,7 @@ export default function BarangScreen() {
           >
             <Text style={styles.retryButtonText}>Coba Lagi</Text>
           </TouchableOpacity>
-        </View>
+        </View> 
       ) : (
         /* KONDISI 3: SUCCESS (2xx) - Data HANYA ditampilkan ketika request berhasil */
         <>
