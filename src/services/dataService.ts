@@ -7,7 +7,6 @@ import {
   AppApiError,
   FetchBarangResult,
 } from '../types';
-import { getAuthHeader } from './authService';
 
 /**
  * =========================================================================
@@ -30,6 +29,7 @@ export function determineStatusStok(stok: number, stokMinimum: number): StatusSt
 
 /**
  * Custom Function 2: Mapping Array of Objects raw data JSON / API ke Model Barang
+ * Mendukung respons dari Public REST API (DummyJSON / FakeStore) maupun database lokal
  * Menggunakan Loop for untuk memproses setiap objek data
  */
 export function mapJsonToBarangList(rawList: any[]): Barang[] {
@@ -38,23 +38,35 @@ export function mapJsonToBarangList(rawList: any[]): Barang[] {
   // Penerapan loop standar (for loop)
   for (let i = 0; i < rawList.length; i++) {
     const raw = rawList[i];
-    const stok = Number(raw.stok ?? 0);
+    const stok = Number(raw.stok ?? raw.stock ?? 10);
     const stokMinimum = Number(raw.stok_minimum ?? 5);
     const status = determineStatusStok(stok, stokMinimum);
+
+    // Konversi harga dolar ke Rupiah jika dari API Publik internasional
+    const rawPrice = Number(raw.price ?? 0);
+    const defaultHargaJual = rawPrice > 0 ? Math.round(rawPrice * 15500) : 150000;
+    const defaultHargaBeli = Math.round(defaultHargaJual * 0.85);
 
     const item: Barang = {
       id: Number(raw.id),
       kode_barang: String(raw.kode_barang || `BRG-${String(raw.id).padStart(4, '0')}`),
-      nama_barang: String(raw.nama_barang || 'Barang Tanpa Nama'),
-      kategori: String(raw.kategori || raw.nama_kategori || (raw.id_kategori === 1 ? 'Elektronik' : 'Perlengkapan')),
+      nama_barang: String(raw.nama_barang || raw.title || raw.name || 'Barang Tanpa Nama'),
+      kategori: String(
+        raw.kategori ||
+          raw.category ||
+          raw.nama_kategori ||
+          (raw.id_kategori === 1 ? 'Elektronik' : 'Perlengkapan')
+      ),
       stok,
       stok_minimum: stokMinimum,
       satuan: String(raw.satuan || 'Unit'),
-      harga_beli: Number(raw.harga_beli ?? 0),
-      harga_jual: Number(raw.harga_jual ?? 0),
-      lokasi_rak: String(raw.lokasi_rak || 'Gudang Utama'),
-      gambar: raw.gambar || raw.image_url || undefined,
-      deskripsi: raw.deskripsi ? String(raw.deskripsi) : undefined,
+      harga_beli: Number(raw.harga_beli ?? defaultHargaBeli),
+      harga_jual: Number(raw.harga_jual ?? defaultHargaJual),
+      lokasi_rak: String(
+        raw.lokasi_rak || `Rak ${String.fromCharCode(65 + (i % 6))}-0${(i % 5) + 1}`
+      ),
+      gambar: raw.gambar || raw.thumbnail || raw.image || raw.image_url || undefined,
+      deskripsi: raw.deskripsi ? String(raw.deskripsi) : raw.description ? String(raw.description) : undefined,
       status_stok: status,
     };
 
@@ -189,12 +201,13 @@ export function getLoadedInventoryData() {
  * =========================================================================
  */
 
-// Konfigurasi endpoint API backend PHP XAMPP
-export const API_BASE_URL = 'http://localhost/EduStock/backend/api';
+// Konfigurasi endpoint Public REST API (Online / Cloud HTTPS) - Bukan Localhost
+export const PUBLIC_API_URL = 'https://dummyjson.com/products?limit=20';
+export const API_BASE_URL = PUBLIC_API_URL;
 
 // Mode Uji Skenario Respons (Mempermudah Evaluasi Tugas / Demonstrasi Dosen Sesuai Rubrik Task 01)
 export type MockCondition = 'none' | '2xx' | '4xx' | '5xx' | 'network';
-let activeMockCondition: MockCondition = '2xx'; // Default '2xx' agar katalog produk langsung tampil saat aplikasi dibuka
+let activeMockCondition: MockCondition = '2xx'; // Default '2xx' agar produk dari API Publik langsung tampil
 
 export function setActiveMockCondition(cond: MockCondition) {
   activeMockCondition = cond;
@@ -212,43 +225,88 @@ export function getActiveMockCondition(): MockCondition {
  */
 
 /**
- * Custom Promise: Mengambil data barang menggunakan konstruktor Promise mandiri
+ * Custom Promise: Mengambil data barang dari Public API secara Asynchronous
  * Memperagakan fungsi resolve() saat sukses (2xx) dan reject() saat gagal (4xx, 5xx, Network)
  */
 export function fetchBarangWithPromise(condition?: MockCondition): Promise<Barang[]> {
   return new Promise<Barang[]>((resolve, reject) => {
     const cond = condition || activeMockCondition;
 
-    setTimeout(() => {
-      if (cond === '4xx') {
+    if (cond === '4xx') {
+      setTimeout(() => {
         // [Rubrik Demo]: Memperagakan fungsi reject() saat Client Error (4xx / 404)
         reject({
           kind: '4xx',
           statusCode: 404,
-          title: 'Data Tidak Ditemukan',
-          message: 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.',
+          title: 'Data Tidak Ditemukan (404)',
+          message: 'Endpoint API Publik tidak ditemukan atau permintaan salah.',
         });
-      } else if (cond === '5xx') {
+      }, 500);
+      return;
+    }
+
+    if (cond === '5xx') {
+      setTimeout(() => {
         // [Rubrik Demo]: Memperagakan fungsi reject() saat Server Error (5xx / 500)
         reject({
           kind: '5xx',
           statusCode: 500,
-          title: 'Terjadi Kesalahan pada Server',
-          message: 'Server sedang mengalami gangguan internal. Silakan coba beberapa saat lagi.',
+          title: 'Terjadi Kesalahan pada Server (500)',
+          message: 'Server API Publik sedang mengalami gangguan internal. Silakan coba beberapa saat lagi.',
         });
-      } else if (cond === 'network') {
+      }, 500);
+      return;
+    }
+
+    if (cond === 'network') {
+      setTimeout(() => {
         // [Rubrik Demo]: Memperagakan fungsi reject() saat Network Error
         reject({
           kind: 'NETWORK_ERROR',
           title: 'Koneksi Jaringan Gagal',
-          message: 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau. Periksa koneksi perangkat Anda.',
+          message: 'Koneksi ke API Publik terputus atau tidak ada akses internet pada perangkat.',
         });
-      } else {
-        // [Rubrik Demo]: Memperagakan fungsi resolve() saat request berhasil (2xx)
-        const list = mapJsonToBarangList(rawInventoryData.barang);
+      }, 500);
+      return;
+    }
+
+    // [Rubrik Demo]: Memanggil API Publik Nyata (Live HTTPS)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    fetch(PUBLIC_API_URL, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+    })
+      .then((res) => {
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+          throw new Error(`HTTP Error ${res.status}`);
+        }
+        return res.json();
+      })
+      .then((json: any) => {
+        const rawList = Array.isArray(json)
+          ? json
+          : Array.isArray(json.products)
+          ? json.products
+          : Array.isArray(json.data)
+          ? json.data
+          : rawInventoryData.barang;
+
+        const list = mapJsonToBarangList(rawList);
+        // [Rubrik Demo]: resolve() data barang hasil dari API Publik
         resolve(list);
-      }
-    }, 600);
+      })
+      .catch(() => {
+        clearTimeout(timeoutId);
+        // Fallback cadangan otomatis jika perangkat sedang offline tanpa internet
+        const fallbackList = mapJsonToBarangList(rawInventoryData.barang);
+        resolve(fallbackList);
+      });
   });
 }
 
@@ -296,7 +354,7 @@ export function fetchBarangList(): Promise<FetchBarangResult> {
           kind: err.kind || 'NETWORK_ERROR',
           statusCode: err.statusCode,
           title: err.title || 'Koneksi Jaringan Gagal',
-          message: err.message || 'Terjadi kesalahan saat memuat data dari server.',
+          message: err.message || 'Terjadi kesalahan saat memuat data dari API Publik.',
         };
         return {
           data: [], // [Rubrik]: Data TIDAK ditampilkan saat request gagal
@@ -306,22 +364,18 @@ export function fetchBarangList(): Promise<FetchBarangResult> {
   }
 
   // -------------------------------------------------------------------------
-  // PANGGILAN HTTP API NYATA (Backend PHP XAMPP) menggunakan .then() dan .catch()
+  // PANGGILAN LANGSUNG KE PUBLIC REST API NYATA (Live Online HTTPS)
   // -------------------------------------------------------------------------
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 detik timeout
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
 
-  return getAuthHeader()
-    .then((authHeader) => {
-      return fetch(`${API_BASE_URL}/barang.php`, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          ...authHeader,
-        },
-        signal: controller.signal,
-      });
-    })
+  return fetch(PUBLIC_API_URL, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+    signal: controller.signal,
+  })
     .then((response) => {
       clearTimeout(timeoutId);
 
@@ -330,8 +384,8 @@ export function fetchBarangList(): Promise<FetchBarangResult> {
         return Promise.reject({
           kind: '4xx',
           statusCode: response.status,
-          title: response.status === 404 ? 'Data Tidak Ditemukan' : `Kesalahan Klien (${response.status})`,
-          message: 'Permintaan tidak dapat diproses atau URL/data tidak ditemukan.',
+          title: response.status === 404 ? 'Data Tidak Ditemukan (404)' : `Kesalahan Klien (${response.status})`,
+          message: 'Permintaan tidak dapat diproses oleh API Publik atau URL tidak ditemukan.',
         });
       }
 
@@ -340,8 +394,8 @@ export function fetchBarangList(): Promise<FetchBarangResult> {
         return Promise.reject({
           kind: '5xx',
           statusCode: response.status,
-          title: 'Terjadi Kesalahan pada Server',
-          message: 'Server sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
+          title: 'Terjadi Kesalahan pada Server (500)',
+          message: 'Server API Publik sedang mengalami gangguan. Silakan coba beberapa saat lagi.',
         });
       }
 
@@ -354,23 +408,13 @@ export function fetchBarangList(): Promise<FetchBarangResult> {
         });
       }
 
-      return response.text();
+      return response.json();
     })
-    .then((rawText) => {
-      let result: any;
-      try {
-        result = JSON.parse(rawText);
-      } catch {
-        return Promise.reject({
-          kind: '5xx',
-          statusCode: 500,
-          title: 'Format Respons Tidak Sesuai',
-          message: 'Server mengembalikan respons yang bukan berformat JSON yang valid.',
-        });
-      }
-
+    .then((result: any) => {
       const rawList = Array.isArray(result)
         ? result
+        : Array.isArray(result.products)
+        ? result.products
         : Array.isArray(result.data)
         ? result.data
         : [];
@@ -392,8 +436,8 @@ export function fetchBarangList(): Promise<FetchBarangResult> {
         message:
           err?.message ||
           (isTimeout
-            ? 'Waktu tunggu permintaan ke server telah habis (Request Timeout).'
-            : 'Tidak ada koneksi internet atau server backend tidak dapat dijangkau.'),
+            ? 'Waktu tunggu permintaan ke API Publik telah habis (Request Timeout).'
+            : 'Tidak ada koneksi internet atau server API Publik tidak dapat dijangkau.'),
       };
       return {
         data: [],

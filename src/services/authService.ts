@@ -4,6 +4,7 @@ import { User, AuthSession, LoginResult } from '../types';
 
 const STORAGE_KEY_TOKEN = '@edustock_auth_token';
 const STORAGE_KEY_USER = '@edustock_auth_user';
+const STORAGE_KEY_IS_DEMO = '@edustock_auth_is_demo';
 
 // In-memory fallback untuk keamanan & performa
 let memorySession: AuthSession | null = null;
@@ -15,7 +16,6 @@ let memorySession: AuthSession | null = null;
  * =========================================================================
  */
 
-// Helper Base64 Cross-Platform (Kompatibel dengan Web, Android, iOS, Hermes)
 function safeBase64Encode(str: string): string {
   try {
     if (typeof btoa === 'function') {
@@ -24,11 +24,13 @@ function safeBase64Encode(str: string): string {
   } catch {}
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
   let output = '';
-  for (let block = 0, charCode, i = 0, map = chars;
-       str.charAt(i | 0) || (map = '=', i % 1);
-       output += map.charAt(63 & block >> 8 - i % 1 * 8)) {
-    charCode = str.charCodeAt(i += 3/4);
-    block = block << 8 | charCode;
+  for (
+    let block = 0, charCode, i = 0, map = chars;
+    str.charAt(i | 0) || ((map = '='), i % 1);
+    output += map.charAt(63 & (block >> (8 - (i % 1) * 8)))
+  ) {
+    charCode = str.charCodeAt((i += 3 / 4));
+    block = (block << 8) | charCode;
   }
   return output;
 }
@@ -40,12 +42,14 @@ function safeBase64Decode(input: string): string {
     }
   } catch {}
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  let str = input.replace(/=+$/, '');
+  const str = input.replace(/=+$/, '');
   let output = '';
-  for (let bc = 0, bs = 0, buffer, i = 0;
-       buffer = str.charAt(i++);
-       ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer,
-         bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0
+  for (
+    let bc = 0, bs = 0, buffer, i = 0;
+    (buffer = str.charAt(i++));
+    ~buffer && ((bs = bc % 4 ? bs * 64 + buffer : buffer), bc++ % 4)
+      ? (output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6))))
+      : 0
   ) {
     buffer = chars.indexOf(buffer);
   }
@@ -55,23 +59,20 @@ function safeBase64Decode(input: string): string {
 /**
  * Custom Function: Membuat Token JWT Mock (Header.Payload.Signature)
  */
-export function generateToken(user: User): string {
-  // 1. JWT Header (Base64)
+export function generateToken(user: User, isDemo: boolean = false): string {
   const header = { alg: 'HS256', typ: 'JWT' };
   const encodedHeader = safeBase64Encode(JSON.stringify(header));
 
-  // 2. JWT Payload dengan Expiration 7 hari (Base64)
   const payload = {
     id: user.id,
     username: user.username,
     role: user.role,
     name: user.name,
     email: user.email,
+    isDemo,
     exp: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
   };
   const encodedPayload = safeBase64Encode(JSON.stringify(payload));
-
-  // 3. JWT Signature simulation
   const signature = 'edustock_signature_' + Math.random().toString(36).substring(2, 10);
 
   return `${encodedHeader}.${encodedPayload}.${signature}`;
@@ -94,7 +95,7 @@ export function decodeToken(token: string): any | null {
 }
 
 /**
- * Custom Function: Autentikasi Login dengan Kredensial dan Penerbitan Token
+ * Autentikasi Login Manual (Kredensial Akun Reguler/Produksi -> isDemo: false)
  */
 export async function authenticateUser(
   usernameInput: string,
@@ -103,7 +104,6 @@ export async function authenticateUser(
   const users: User[] = rawInventoryData.users as User[];
   const trimmedUser = usernameInput.trim().toLowerCase();
 
-  // Penerapan loop untuk mencari user yang cocok
   let matchedUser: User | null = null;
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
@@ -123,8 +123,7 @@ export async function authenticateUser(
     };
   }
 
-  // Buat Token baru
-  const token = generateToken(matchedUser);
+  const token = generateToken(matchedUser, false);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const session: AuthSession = {
@@ -137,9 +136,9 @@ export async function authenticateUser(
     },
     token,
     expiresAt,
+    isDemo: false,
   };
 
-  // Simpan Token & Session ke AsyncStorage
   await saveSession(session);
 
   return {
@@ -150,13 +149,13 @@ export async function authenticateUser(
 }
 
 /**
- * Custom Function: Login Cepat Akun Demo (Development Mode)
+ * Login Cepat Akun Demo (Simulasi & Pengujian -> isDemo: true)
  */
 export async function loginAsDemo(roleKey: 'admin' | 'staff' | 'manager'): Promise<AuthSession> {
   const users: User[] = rawInventoryData.users as User[];
   const targetUser = users.find((u) => u.username === roleKey) || users[0];
 
-  const token = generateToken(targetUser);
+  const token = generateToken(targetUser, true);
   const session: AuthSession = {
     user: {
       id: targetUser.id,
@@ -167,28 +166,24 @@ export async function loginAsDemo(roleKey: 'admin' | 'staff' | 'manager'): Promi
     },
     token,
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    isDemo: true,
   };
 
   await saveSession(session);
   return session;
 }
 
-/**
- * Custom Function: Simpan Session & Token ke Persistent Storage
- */
 export async function saveSession(session: AuthSession): Promise<void> {
   try {
     memorySession = session;
     await AsyncStorage.setItem(STORAGE_KEY_TOKEN, session.token);
     await AsyncStorage.setItem(STORAGE_KEY_USER, JSON.stringify(session.user));
+    await AsyncStorage.setItem(STORAGE_KEY_IS_DEMO, session.isDemo ? 'true' : 'false');
   } catch (err) {
     console.error('Error saving session to storage:', err);
   }
 }
 
-/**
- * Custom Function: Ambil Session aktif dari Storage
- */
 export async function getSavedSession(): Promise<AuthSession | null> {
   if (memorySession) {
     return memorySession;
@@ -197,13 +192,17 @@ export async function getSavedSession(): Promise<AuthSession | null> {
   try {
     const token = await AsyncStorage.getItem(STORAGE_KEY_TOKEN);
     const userJson = await AsyncStorage.getItem(STORAGE_KEY_USER);
+    const isDemoStr = await AsyncStorage.getItem(STORAGE_KEY_IS_DEMO);
 
     if (token && userJson) {
       const user: User = JSON.parse(userJson);
+      const decoded = decodeToken(token);
+      const isDemo = decoded?.isDemo === true || isDemoStr === 'true';
       memorySession = {
         user,
         token,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        isDemo,
       };
       return memorySession;
     }
@@ -214,10 +213,6 @@ export async function getSavedSession(): Promise<AuthSession | null> {
   return null;
 }
 
-/**
- * Custom Function: Mengambil Header Authorization Bearer Token
- * Digunakan untuk pemanggilan HTTP / API
- */
 export async function getAuthHeader(): Promise<{ Authorization: string } | Record<string, never>> {
   const session = await getSavedSession();
   if (session?.token) {
@@ -226,14 +221,12 @@ export async function getAuthHeader(): Promise<{ Authorization: string } | Recor
   return {};
 }
 
-/**
- * Custom Function: Logout dan hapus token dari storage
- */
 export async function logout(): Promise<void> {
   try {
     memorySession = null;
     await AsyncStorage.removeItem(STORAGE_KEY_TOKEN);
     await AsyncStorage.removeItem(STORAGE_KEY_USER);
+    await AsyncStorage.removeItem(STORAGE_KEY_IS_DEMO);
   } catch (err) {
     console.error('Error clearing session:', err);
   }

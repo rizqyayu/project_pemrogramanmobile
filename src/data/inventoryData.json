@@ -4,24 +4,24 @@
       "id": 1,
       "username": "admin",
       "password": "password123",
-      "name": "Budi Santoso",
-      "email": "budi.gudang@edustock.com",
+      "name": "Dhea Ayu",
+      "email": "dhea.gudang@edustock.com",
       "role": "Admin Gudang"
     },
     {
       "id": 2,
       "username": "staff",
       "password": "password123",
-      "name": "Rian Pratama",
-      "email": "rian.staff@edustock.com",
+      "name": "Riqzy Ayu",
+      "email": "riqzy.staff@edustock.com",
       "role": "Staff Inventory"
     },
     {
       "id": 3,
       "username": "manager",
       "password": "password123",
-      "name": "Hendra Wijaya",
-      "email": "hendra.owner@edustock.com",
+      "name": "Khansa Kirana",
+      "email": "khansa.owner@edustock.com",
       "role": "Pemilik Toko / Manajer"
     }
   ],
@@ -176,7 +176,7 @@
       "jumlah": 2,
       "satuan": "Unit",
       "tanggal": "6 Okt 2026",
-      "operator": "Rian Pratama",
+      "operator": "Riqzy Ayu",
       "role_operator": "Staff Inventory",
       "sisa_stok": 15
     },
@@ -188,7 +188,7 @@
       "jumlah": 5,
       "satuan": "Unit",
       "tanggal": "6 Okt 2026",
-      "operator": "Budi Santoso",
+      "operator": "Dhea Ayu",
       "role_operator": "Admin Gudang",
       "sisa_stok": 20
     },
@@ -200,7 +200,7 @@
       "jumlah": 10,
       "satuan": "Unit",
       "tanggal": "5 Okt 2026",
-      "operator": "Budi Santoso",
+      "operator": "Dhea Ayu",
       "role_operator": "Admin Gudang",
       "sisa_stok": 25
     },
@@ -212,7 +212,7 @@
       "jumlah": 2,
       "satuan": "Unit",
       "tanggal": "5 Okt 2026",
-      "operator": "Rian Pratama",
+      "operator": "Riqzy Ayu",
       "role_operator": "Staff Inventory",
       "sisa_stok": 3
     },
@@ -224,7 +224,7 @@
       "jumlah": 8,
       "satuan": "Unit",
       "tanggal": "4 Okt 2026",
-      "operator": "Budi Santoso",
+      "operator": "Dhea Ayu",
       "role_operator": "Admin Gudang",
       "sisa_stok": 8
     },
@@ -236,7 +236,7 @@
       "jumlah": 2,
       "satuan": "Unit",
       "tanggal": "3 Okt 2026",
-      "operator": "Rian Pratama",
+      "operator": "Riqzy Ayu",
       "role_operator": "Staff Inventory",
       "sisa_stok": 2
     }

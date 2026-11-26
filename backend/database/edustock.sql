@@ -27,9 +27,9 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `users` (`id`, `username`, `password`, `name`, `email`, `role`) VALUES
-(1, 'admin', 'password123', 'Budi Santoso', 'budi.gudang@edustock.com', 'Admin Gudang'),
-(2, 'staff', 'password123', 'Rian Pratama', 'rian.staff@edustock.com', 'Staff Inventory'),
-(3, 'manager', 'password123', 'Hendra Wijaya', 'hendra.owner@edustock.com', 'Pemilik Toko / Manajer');
+(1, 'admin', 'password123', 'Dhea Ayu', 'dhea.gudang@edustock.com', 'Admin Gudang'),
+(2, 'staff', 'password123', 'Riqzy Ayu', 'riqzy.staff@edustock.com', 'Staff Inventory'),
+(3, 'manager', 'password123', 'Khansa Kirana', 'khansa.owner@edustock.com', 'Pemilik Toko / Manajer');
 
 -- -------------------------------------------------------------------------
 -- 2. Tabel: barang (Katalog Master Barang Inventaris & Gambar Produk)
@@ -82,9 +82,9 @@ CREATE TABLE `transaksi` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `transaksi` (`id`, `id_barang`, `nama_barang`, `jenis`, `jumlah`, `satuan`, `tanggal`, `operator`, `role_operator`, `sisa_stok`) VALUES
-(1, 3, 'Drawing Tablet Wacom Intuos Pen Small', 'keluar', 2, 'Unit', '6 Okt 2026', 'Rian Pratama', 'Staff Inventory', 15),
-(2, 1, 'Laptop ASUS ExpertBook B1400 Core i5', 'keluar', 5, 'Unit', '6 Okt 2026', 'Budi Santoso', 'Admin Gudang', 20),
-(3, 1, 'Laptop ASUS ExpertBook B1400 Core i5', 'masuk', 10, 'Unit', '5 Okt 2026', 'Budi Santoso', 'Admin Gudang', 25),
-(4, 2, 'Proyektor Epson EB-E01 3300 Lumens 3LCD', 'keluar', 2, 'Unit', '5 Okt 2026', 'Rian Pratama', 'Staff Inventory', 3),
-(5, 7, 'Mikroskop Digital Biologi Lab 1600X LCD', 'masuk', 8, 'Unit', '4 Okt 2026', 'Budi Santoso', 'Admin Gudang', 8),
-(6, 6, '3D Printer Creality Ender-3 V2 Silent Board', 'masuk', 2, 'Unit', '3 Okt 2026', 'Rian Pratama', 'Staff Inventory', 2);
+(1, 3, 'Drawing Tablet Wacom Intuos Pen Small', 'keluar', 2, 'Unit', '6 Okt 2026', 'Riqzy Ayu', 'Staff Inventory', 15),
+(2, 1, 'Laptop ASUS ExpertBook B1400 Core i5', 'keluar', 5, 'Unit', '6 Okt 2026', 'Dhea Ayu', 'Admin Gudang', 20),
+(3, 1, 'Laptop ASUS ExpertBook B1400 Core i5', 'masuk', 10, 'Unit', '5 Okt 2026', 'Dhea Ayu', 'Admin Gudang', 25),
+(4, 2, 'Proyektor Epson EB-E01 3300 Lumens 3LCD', 'keluar', 2, 'Unit', '5 Okt 2026', 'Riqzy Ayu', 'Staff Inventory', 3),
+(5, 7, 'Mikroskop Digital Biologi Lab 1600X LCD', 'masuk', 8, 'Unit', '4 Okt 2026', 'Dhea Ayu', 'Admin Gudang', 8),
+(6, 6, '3D Printer Creality Ender-3 V2 Silent Board', 'masuk', 2, 'Unit', '3 Okt 2026', 'Riqzy Ayu', 'Staff Inventory', 2);
