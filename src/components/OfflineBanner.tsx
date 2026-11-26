@@ -35,17 +35,18 @@ export function OfflineBanner({ onRetry }: OfflineBannerProps) {
   const [animValue] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
+    const useNative = Platform.OS !== 'web';
     if (status === 'offline' || status === 'reconnected') {
       Animated.timing(animValue, {
         toValue: 1,
         duration: 260,
-        useNativeDriver: true,
+        useNativeDriver: useNative,
       }).start();
     } else {
       Animated.timing(animValue, {
         toValue: 0,
         duration: 260,
-        useNativeDriver: true,
+        useNativeDriver: useNative,
       }).start();
     }
   }, [status, animValue]);
@@ -56,12 +57,12 @@ export function OfflineBanner({ onRetry }: OfflineBannerProps) {
   }
 
   const isRestored = status === 'reconnected';
-  const bannerBg = isRestored ? '#10b981' : '#ef4444';
+  const bannerBg = isRestored ? '#16A34A' : '#EF4444';
   const iconName = isRestored ? 'wifi' : 'wifi-off';
   const titleText = isRestored ? 'Koneksi Kembali Tersedia' : 'Koneksi Internet Terputus';
   const descText = isRestored
-    ? 'Aplikasi kembali online. Melanjutkan proses pengambilan data...'
-    : 'Mode offline aktif. Anda tetap dapat mengakses data inventaris lokal.';
+    ? 'Aplikasi kembali online. Melanjutkan sinkronisasi data...'
+    : 'Mode offline aktif. Data inventaris lokal tetap tersedia.';
 
   // Perhitungan padding atas yang aman (notch iPhone / status bar Android)
   const topInset = Math.max(
@@ -133,11 +134,11 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 9999,
     elevation: 20,
-    paddingBottom: 8,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.18,
-    shadowRadius: 5,
+    paddingBottom: 10,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.14,
+    shadowRadius: 8,
   },
   bannerContent: {
     flexDirection: 'row',
@@ -146,10 +147,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   iconWrapper: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
@@ -159,10 +160,10 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   bannerTitle: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#ffffff',
-    letterSpacing: 0.1,
+    color: '#FFFFFF',
+    letterSpacing: -0.1,
   },
   bannerDesc: {
     fontSize: 11,
@@ -172,19 +173,19 @@ const styles = StyleSheet.create({
   retryButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    shadowColor: '#000000',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+    shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
     elevation: 2,
   },
   retryButtonText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#ef4444',
+    color: '#EF4444',
   },
 });

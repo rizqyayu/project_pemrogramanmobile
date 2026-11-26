@@ -30,7 +30,7 @@ export default function RootLayout() {
       <Stack
         screenOptions={{
           headerShown: false, // Menggunakan custom header di masing-masing screen agar UI EduStock konsisten & rapi
-          contentStyle: { backgroundColor: '#f8fafc' },
+          contentStyle: { backgroundColor: '#F4F8FF' },
           animation: 'slide_from_right', // Transisi animasi halus saat membuka halaman baru
         }}
       >
@@ -63,6 +63,14 @@ export default function RootLayout() {
           name="scanner"
           options={{
             title: 'Scan Barcode Barang',
+          }}
+        />
+
+        {/* Rute 5: Halaman Lokasi & Geofence Gudang (src/app/lokasi.tsx) */}
+        <Stack.Screen
+          name="lokasi"
+          options={{
+            title: 'Lokasi & Geofence Gudang',
           }}
         />
       </Stack>

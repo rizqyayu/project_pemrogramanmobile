@@ -1,10 +1,8 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Platform,
   RefreshControl,
@@ -16,17 +14,28 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { UI, cardShadow, primaryButtonShadow } from '../constants/uiTokens';
+import {
+  SoftBlueBackdrop,
+  PrimaryGradientButton,
+  SecondaryOutlineButton,
+} from '../components/SoftBlueUI';
+import { AccessDeniedView } from '../components/AccessDeniedView';
+import { showAppAlert, showAppConfirm } from '../utils/feedback';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
 
 // Import Types
 import {
   AuthSession,
   Barang,
+  KoreksiStokRequest,
   TransaksiStok,
   User,
+  UserRole,
 } from '../types';
 
-// Import Services
+// Import Services & RBAC
 import {
   getAuthHeader,
   getSavedSession,
@@ -34,48 +43,39 @@ import {
   logout,
 } from '../services/authService';
 import {
-  calculateInventorySummary,
-  determineStatusStok,
-  filterItemsBelowMinimum,
-  getLoadedInventoryData,
-} from '../services/dataService';
+  authorizeAction,
+  getRoleShortTitle,
+  getScopedTransaksiList,
+  hasPermission,
+} from '../services/rbacService';
+import {
+  addManagedUser,
+  getStoreSnapshot,
+  recordStockMutation,
+  reviewKoreksiStok,
+  submitKoreksiStok,
+  subscribeInventoryStore,
+  toggleUserActiveStatus,
+  updateWarehouseConfig,
+} from '../services/inventoryStore';
 
 /**
  * =========================================================================
- * HALAMAN 2: DASHBOARD (src/app/dashboard.tsx)
- * Memenuhi Kriteria Modul 2:
- * 1. useState: Menyimpan data user, session token, ringkasan stok, status loading & refresh.
- * 2. useEffect: Memuat session & data inventaris saat halaman pertama kali dibuka.
- * 3. Expo Router:
- *    - router.push('/barang'): Membuka halaman Daftar Barang (menumpuk di stack).
- *    - router.replace('/'): Keluar (logout) dan kembali ke halaman Login.
+ * HALAMAN 2: DASHBOARD DENGAN RBAC PENUH (src/app/dashboard.tsx)
+ * 3 Pengalaman Dashboard Terpisah:
+ * 1. Admin Gudang (Dhea Ayu): kontrol penuh, CRUD, koreksi stok, pengguna, pengaturan gudang
+ * 2. Staff Inventory (Riqzy Ayu): operasional masuk/keluar, scan, riwayat pribadi, presensi GPS
+ * 3. Manajer Operasional (Khansa Kirana): monitoring eksekutif, approval koreksi stok, laporan
  * =========================================================================
  */
 export default function DashboardScreen() {
-  // -----------------------------------------------------------------------
-  // PENERAPAN STATE (useState)
-  // -----------------------------------------------------------------------
-  // State untuk menyimpan data pengguna yang sedang login
-  const [currentUser, setCurrentUser] = useState<User>({
-    id: 1,
-    username: 'admin',
-    name: 'Budi Santoso',
-    email: 'budi.gudang@edustock.com',
-    role: 'Admin Gudang',
-  });
+  const insets = useSafeAreaInsets();
 
-  // State untuk sesi autentikasi aktif (termasuk token JWT)
   const [session, setSession] = useState<AuthSession | null>(null);
-
-  // State untuk data inventaris (summary, peringatan stok menipis, transaksi terbaru)
-  const [inventoryData, setInventoryData] = useState(() => getLoadedInventoryData());
-
-  // State untuk status loading awal dan refresh data
+  const [storeSnapshot, setStoreSnapshot] = useState(() => getStoreSnapshot());
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [dashboardError, setDashboardError] = useState<string | null>(null); // State Error Dashboard
-
-  // State untuk toggle visibilitas rincian token JWT
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [showTokenDetails, setShowTokenDetails] = useState<boolean>(false);
 
   // State Form Modal Interaktif: Stok Masuk & Stok Keluar
@@ -84,35 +84,127 @@ export default function DashboardScreen() {
   const [jumlahInput, setJumlahInput] = useState<string>('5');
   const [catatanInput, setCatatanInput] = useState<string>('');
 
-  // State Modal Interaktif Fitur Lengkap: Mutasi Stok, Laporan, Menu Profil
+  // State Modal Koreksi Stok (Admin Gudang)
+  const [isKoreksiModalVisible, setIsKoreksiModalVisible] = useState<boolean>(false);
+  const [koreksiBarangId, setKoreksiBarangId] = useState<number>(1);
+  const [koreksiStokFisik, setKoreksiStokFisik] = useState<string>('0');
+  const [koreksiAlasan, setKoreksiAlasan] = useState<string>('');
+
+  // State Modal Kelola Pengguna & Pengaturan Gudang (Admin Gudang)
+  const [isUsersModalVisible, setIsUsersModalVisible] = useState<boolean>(false);
+  const [newUserName, setNewUserName] = useState<string>('');
+  const [newUserUsername, setNewUserUsername] = useState<string>('');
+  const [newUserEmail, setNewUserEmail] = useState<string>('');
+  const [newUserRole, setNewUserRole] = useState<UserRole>('Staff Inventory');
+
+  const [isWarehouseModalVisible, setIsWarehouseModalVisible] = useState<boolean>(false);
+  const [whNameDraft, setWhNameDraft] = useState<string>('');
+  const [whAddressDraft, setWhAddressDraft] = useState<string>('');
+  const [whRadiusDraft, setWhRadiusDraft] = useState<number>(100);
+
+  // State Modal Approval Koreksi Stok (Manajer Operasional)
+  const [isApprovalModalVisible, setIsApprovalModalVisible] = useState<boolean>(false);
+
+  // State Modal Utama Bottom Nav: Mutasi, Laporan, Menu + Ganti Peran
   const [isMutasiModalVisible, setIsMutasiModalVisible] = useState<boolean>(false);
   const [mutasiFilter, setMutasiFilter] = useState<'semua' | 'masuk' | 'keluar'>('semua');
   const [isLaporanModalVisible, setIsLaporanModalVisible] = useState<boolean>(false);
   const [isMenuModalVisible, setIsMenuModalVisible] = useState<boolean>(false);
+  const [menuViewMode, setMenuViewMode] = useState<'menu' | 'role'>('menu');
+  const [pendingRoleKey, setPendingRoleKey] = useState<'admin' | 'staff' | 'manager'>('admin');
 
-  const { summary, alertItems, transaksiList } = inventoryData;
+  const currentUser: User = session?.user || {
+    id: 0,
+    username: 'guest',
+    name: 'Tamu',
+    email: '-',
+    role: 'Staff Inventory',
+  };
 
-  // Buka Modal Formulir Stok Masuk / Keluar
+  // Sinkronisasi reactive dengan shared store
+  useEffect(() => {
+    const unsubscribe = subscribeInventoryStore(() => {
+      setStoreSnapshot(getStoreSnapshot());
+    });
+    return unsubscribe;
+  }, []);
+
+  const {
+    barangList,
+    transaksiList,
+    summary,
+    alertItems,
+    koreksiList,
+    managedUsers,
+    warehouseConfig,
+    presensiLogs,
+  } = storeSnapshot;
+
+  // Hak Akses RBAC Turunan dari Token & Session
+  const isAdmin = currentUser.role === 'Admin Gudang';
+  const isStaff = currentUser.role === 'Staff Inventory';
+  const isManager = currentUser.role === 'Pemilik Toko / Manajer';
+
+  const canMutateStock = hasPermission(session, 'stock:masuk') && hasPermission(session, 'stock:keluar');
+  const canScanBarcode = hasPermission(session, 'barcode:scan');
+  const canViewReports = hasPermission(session, 'report:view');
+  const canSubmitKoreksi = hasPermission(session, 'stock:koreksi_submit');
+  const canApproveKoreksi = hasPermission(session, 'stock:koreksi_approve');
+  const canManageUsers = hasPermission(session, 'users:manage');
+  const canConfigWarehouse = hasPermission(session, 'warehouse:config');
+  const canMonitorStaff = hasPermission(session, 'staff:monitor');
+  const canSwitchDemoRole = authorizeAction(session, 'demo:switch_role').allowed;
+
+  // Scope riwayat transaksi: Staff hanya melihat miliknya, Admin & Manajer melihat semua
+  const scopedTransaksiList = useMemo(
+    () => getScopedTransaksiList(transaksiList, session),
+    [transaksiList, session]
+  );
+
+  const pendingKoreksiCount = useMemo(
+    () => koreksiList.filter((k) => k.status === 'pending').length,
+    [koreksiList]
+  );
+
+  const myLatestPresensi = useMemo(
+    () => presensiLogs.find((p) => p.nama.toLowerCase() === currentUser.name.toLowerCase()),
+    [presensiLogs, currentUser.name]
+  );
+
+  const todayFormatted = useMemo(
+    () =>
+      new Date().toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+    []
+  );
+
+  // Buka Modal Formulir Stok Masuk / Keluar (Dengan Guard RBAC)
   const openStokModal = (type: 'masuk' | 'keluar') => {
+    const perm = type === 'masuk' ? 'stock:masuk' : 'stock:keluar';
+    const auth = authorizeAction(session, perm);
+    if (!auth.allowed) {
+      showAppAlert('Akses Ditolak (403)', auth.reason || 'Anda tidak memiliki izin transaksi stok.');
+      return;
+    }
+
     setStokModalType(type);
     setJumlahInput('5');
     setCatatanInput(type === 'masuk' ? 'Pengadaan Stok Baru' : 'Distribusi Unit Lab');
-    if (inventoryData.barangList.length > 0) {
-      setSelectedBarangId(inventoryData.barangList[0].id);
+    if (barangList.length > 0) {
+      setSelectedBarangId(barangList[0].id);
     }
   };
 
-  // Stepper Pengubah Jumlah Unit (+ / -)
   const changeJumlah = (delta: number) => {
     const current = parseInt(jumlahInput, 10) || 0;
     const next = Math.max(1, current + delta);
     setJumlahInput(String(next));
   };
 
-  // Barang yang sedang dipilih di Modal
-  const selectedBarang =
-    inventoryData.barangList.find((b) => b.id === selectedBarangId) ||
-    inventoryData.barangList[0];
+  const selectedBarang = barangList.find((b) => b.id === selectedBarangId) || barangList[0];
   const parsedJumlah = parseInt(jumlahInput, 10) || 0;
   const estimasiStokAkhir = selectedBarang
     ? stokModalType === 'masuk'
@@ -122,126 +214,183 @@ export default function DashboardScreen() {
   const isStokKurang =
     stokModalType === 'keluar' && selectedBarang && parsedJumlah > selectedBarang.stok;
 
-  // Handler Simpan Transaksi Stok Masuk / Keluar
+  // Handler Simpan Transaksi Stok Masuk / Keluar melalui Store yang dilindungi RBAC
   const handleSimpanTransaksi = () => {
     if (!stokModalType || !selectedBarang) return;
 
-    if (parsedJumlah <= 0) {
-      Alert.alert('Perhatian', 'Jumlah unit harus berupa angka lebih dari 0.');
-      return;
-    }
-
-    if (isStokKurang) {
-      Alert.alert(
-        'Stok Tidak Mencukupi',
-        `Jumlah yang ingin dikeluarkan (${parsedJumlah} ${selectedBarang.satuan}) melebihi stok yang tersedia saat ini (${selectedBarang.stok} ${selectedBarang.satuan}).`
-      );
-      return;
-    }
-
-    // 1. Update data barang secara immutably
-    const currentBarangList = inventoryData.barangList.map((item) => {
-      if (item.id === selectedBarang.id) {
-        const newStok = estimasiStokAkhir;
-        const newStatus = determineStatusStok(newStok, item.stok_minimum);
-        return {
-          ...item,
-          stok: newStok,
-          status_stok: newStatus,
-        };
-      }
-      return item;
-    });
-
-    // 2. Format tanggal transaksi (contoh: 27 Okt 2026)
-    const todayStr = new Date().toLocaleDateString('id-ID', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
-
-    // 3. Tambahkan transaksi baru ke riwayat
-    const newTrx: TransaksiStok = {
-      id: Date.now(),
+    const result = recordStockMutation(session, {
       id_barang: selectedBarang.id,
-      nama_barang: selectedBarang.nama_barang,
       jenis: stokModalType,
       jumlah: parsedJumlah,
-      satuan: selectedBarang.satuan,
-      tanggal: todayStr,
-      operator: currentUser.name,
-      role_operator: currentUser.role,
-      sisa_stok: estimasiStokAkhir,
-    };
-
-    const updatedTrxList = [newTrx, ...inventoryData.transaksiList];
-
-    // 4. Hitung ulang summary dan alert items
-    const newSummary = calculateInventorySummary(currentBarangList, updatedTrxList);
-    const newAlertItems = filterItemsBelowMinimum(currentBarangList);
-
-    // 5. Update state inventaris (memicu pembaruan UI secara otomatis di Dashboard)
-    setInventoryData({
-      barangList: currentBarangList,
-      transaksiList: updatedTrxList,
-      summary: newSummary,
-      alertItems: newAlertItems,
+      catatan: catatanInput,
     });
+
+    if (!result.ok) {
+      showAppAlert(`Ditolak (${result.statusCode})`, result.message);
+      return;
+    }
 
     const isMasuk = stokModalType === 'masuk';
     const actionLabel = isMasuk ? 'Stok Masuk' : 'Stok Keluar';
     const sign = isMasuk ? '+' : '-';
     setStokModalType(null);
 
-    Alert.alert(
+    showAppAlert(
       `Sukses Catat ${actionLabel}`,
       `Transaksi berhasil disimpan!\n\n` +
-      `Barang: ${selectedBarang.nama_barang}\n` +
-      `Perubahan: ${sign}${parsedJumlah} ${selectedBarang.satuan}\n` +
-      `Stok Sekarang: ${estimasiStokAkhir} ${selectedBarang.satuan}\n` +
-      `Catatan: ${catatanInput || '-'}\n` +
-      `Operator: ${currentUser.name}`
+        `Barang: ${selectedBarang.nama_barang}\n` +
+        `Perubahan: ${sign}${parsedJumlah} ${selectedBarang.satuan}\n` +
+        `Stok Sekarang: ${result.data?.sisa_stok} ${selectedBarang.satuan}\n` +
+        `Catatan: ${catatanInput || '-'}\n` +
+        `Operator: ${currentUser.name} (${currentUser.role})`
     );
   };
 
-  // -----------------------------------------------------------------------
-  // HELPER & KALKULASI LAPORAN & MUTASI STOK
-  // -----------------------------------------------------------------------
+  // Handler Pengajuan Koreksi Stok (Admin Gudang)
+  const openKoreksiModal = () => {
+    const auth = authorizeAction(session, 'stock:koreksi_submit');
+    if (!auth.allowed) {
+      showAppAlert('Akses Ditolak (403)', auth.reason || 'Hanya Admin Gudang yang dapat mengajukan koreksi stok.');
+      return;
+    }
+    if (barangList.length > 0) {
+      setKoreksiBarangId(barangList[0].id);
+      setKoreksiStokFisik(String(barangList[0].stok));
+    }
+    setKoreksiAlasan('');
+    setIsKoreksiModalVisible(true);
+  };
+
+  const handleSubmitKoreksi = () => {
+    const fisik = parseInt(koreksiStokFisik, 10);
+    if (Number.isNaN(fisik)) {
+      showAppAlert('Perhatian', 'Masukkan angka stok fisik yang valid.');
+      return;
+    }
+
+    const res = submitKoreksiStok(session, {
+      id_barang: koreksiBarangId,
+      stok_fisik: fisik,
+      alasan: koreksiAlasan,
+    });
+
+    if (!res.ok) {
+      showAppAlert(`Ditolak (${res.statusCode})`, res.message);
+      return;
+    }
+
+    setIsKoreksiModalVisible(false);
+    showAppAlert('Koreksi Diajukan', res.message);
+  };
+
+  // Handler Approval Koreksi Stok (Manajer Operasional)
+  const handleReviewKoreksi = (koreksiId: number, decision: 'approved' | 'rejected') => {
+    const res = reviewKoreksiStok(session, koreksiId, decision);
+    if (!res.ok) {
+      showAppAlert(`Ditolak (${res.statusCode})`, res.message);
+      return;
+    }
+    showAppAlert(
+      decision === 'approved' ? 'Koreksi Disetujui' : 'Koreksi Ditolak',
+      res.message
+    );
+  };
+
+  // Handler Manajemen Pengguna (Admin Gudang)
+  const handleAddUser = () => {
+    const res = addManagedUser(session, {
+      name: newUserName,
+      username: newUserUsername,
+      email: newUserEmail,
+      role: newUserRole,
+    });
+    if (!res.ok) {
+      showAppAlert(`Ditolak (${res.statusCode})`, res.message);
+      return;
+    }
+    setNewUserName('');
+    setNewUserUsername('');
+    setNewUserEmail('');
+    showAppAlert('Pengguna Ditambahkan', res.message);
+  };
+
+  const handleToggleUserStatus = (userId: number) => {
+    const res = toggleUserActiveStatus(session, userId);
+    if (!res.ok) {
+      showAppAlert(`Ditolak (${res.statusCode})`, res.message);
+      return;
+    }
+    showAppAlert('Status Pengguna', res.message);
+  };
+
+  // Handler Pengaturan Gudang (Admin Gudang)
+  const openWarehouseModal = () => {
+    const auth = authorizeAction(session, 'warehouse:config');
+    if (!auth.allowed) {
+      showAppAlert('Akses Ditolak (403)', auth.reason || 'Hanya Admin Gudang yang dapat mengubah pengaturan gudang.');
+      return;
+    }
+    setWhNameDraft(warehouseConfig.nama_gudang);
+    setWhAddressDraft(warehouseConfig.alamat_gudang);
+    setWhRadiusDraft(warehouseConfig.radius_geofence);
+    setIsWarehouseModalVisible(true);
+  };
+
+  const handleSaveWarehouseConfig = () => {
+    const res = updateWarehouseConfig(session, {
+      nama_gudang: whNameDraft.trim() || warehouseConfig.nama_gudang,
+      alamat_gudang: whAddressDraft.trim() || warehouseConfig.alamat_gudang,
+      radius_geofence: whRadiusDraft,
+    });
+    if (!res.ok) {
+      showAppAlert(`Ditolak (${res.statusCode})`, res.message);
+      return;
+    }
+    setIsWarehouseModalVisible(false);
+    showAppAlert('Pengaturan Disimpan', res.message);
+  };
+
   const formatRupiah = (num: number) => {
     return 'Rp ' + Number(num).toLocaleString('id-ID');
   };
 
-  // Handler Ganti Peran Cepat (Simulasi Multi-Role: Admin, Staff, Manager)
+  // Handler Ganti Peran Demo (Hanya diizinkan saat sesi demo aktif)
   const handleQuickSwitchRole = async (roleKey: 'admin' | 'staff' | 'manager') => {
+    const auth = authorizeAction(session, 'demo:switch_role');
+    if (!auth.allowed) {
+      showAppAlert('Akses Ditolak (403)', auth.reason || 'Pergantian peran diblokir pada sesi produksi.');
+      return;
+    }
+
     try {
       const newSession = await loginAsDemo(roleKey);
       setSession(newSession);
-      setCurrentUser(newSession.user);
-      Alert.alert(
+      setMenuViewMode('menu');
+      showAppAlert(
         'Peran Berhasil Diperbarui',
         `Sesi aktif sekarang sebagai:\n• Nama: ${newSession.user.name}\n• Peran: ${newSession.user.role}\n• Email: ${newSession.user.email}`
       );
     } catch (err: any) {
-      Alert.alert('Gagal Ganti Peran', err?.message || 'Terjadi kesalahan sistem.');
+      showAppAlert('Gagal Ganti Peran', err?.message || 'Terjadi kesalahan sistem.');
     }
   };
 
-  // Kalkulasi Finansial Inventaris untuk Modal Laporan
+  // Kalkulasi Finansial Inventaris (Hanya relevan untuk Admin & Manajer)
   const totalAsetBeli = useMemo(() => {
-    return inventoryData.barangList.reduce((acc, b) => acc + (b.harga_beli * b.stok), 0);
-  }, [inventoryData.barangList]);
+    return barangList.reduce((acc, b) => acc + b.harga_beli * b.stok, 0);
+  }, [barangList]);
 
   const totalNilaiJual = useMemo(() => {
-    return inventoryData.barangList.reduce((acc, b) => acc + (b.harga_jual * b.stok), 0);
-  }, [inventoryData.barangList]);
+    return barangList.reduce((acc, b) => acc + b.harga_jual * b.stok, 0);
+  }, [barangList]);
 
   const potensiMargin = totalNilaiJual - totalAsetBeli;
-  const persentaseMargin = totalAsetBeli > 0 ? ((potensiMargin / totalAsetBeli) * 100).toFixed(1) : '0';
+  const persentaseMargin =
+    totalAsetBeli > 0 ? ((potensiMargin / totalAsetBeli) * 100).toFixed(1) : '0';
 
-  // Ringkasan per Kategori untuk Modal Laporan
   const kategoriSummary = useMemo(() => {
     const map = new Map<string, { count: number; totalStok: number; totalNilai: number }>();
-    for (const b of inventoryData.barangList) {
+    for (const b of barangList) {
       const current = map.get(b.kategori) || { count: 0, totalStok: 0, totalNilai: 0 };
       current.count += 1;
       current.totalStok += b.stok;
@@ -252,35 +401,27 @@ export default function DashboardScreen() {
       kategori,
       ...val,
     }));
-  }, [inventoryData.barangList]);
+  }, [barangList]);
 
-  // Filter Mutasi Stok
   const filteredMutasiList = useMemo(() => {
-    if (mutasiFilter === 'semua') return inventoryData.transaksiList;
-    return inventoryData.transaksiList.filter((t) => t.jenis === mutasiFilter);
-  }, [mutasiFilter, inventoryData.transaksiList]);
+    if (mutasiFilter === 'semua') return scopedTransaksiList;
+    return scopedTransaksiList.filter((t) => t.jenis === mutasiFilter);
+  }, [mutasiFilter, scopedTransaksiList]);
 
-  const countMutasiMasuk = inventoryData.transaksiList.filter((t) => t.jenis === 'masuk').length;
-  const countMutasiKeluar = inventoryData.transaksiList.filter((t) => t.jenis === 'keluar').length;
+  const countMutasiMasuk = scopedTransaksiList.filter((t) => t.jenis === 'masuk').length;
+  const countMutasiKeluar = scopedTransaksiList.filter((t) => t.jenis === 'keluar').length;
+  const totalSkuForBar = Math.max(
+    1,
+    summary.statusAman + summary.statusMenipis + summary.statusHabis
+  );
 
-  // -----------------------------------------------------------------------
-  // PENERAPAN EFFECT (useEffect)
-  // Dijalankan saat pertama kali Dashboard dipasang (mount) ke layar ([]).
-  // -----------------------------------------------------------------------
   const loadDashboardData = useCallback(async () => {
     setIsLoading(true);
     setDashboardError(null);
     try {
-      // 1. Memeriksa session dari storage
       const savedSession = await getSavedSession();
-      if (savedSession) {
-        setSession(savedSession);
-        setCurrentUser(savedSession.user);
-      }
-
-      // 2. Memuat kalkulasi data inventaris terbaru
-      const data = getLoadedInventoryData();
-      setInventoryData(data);
+      setSession(savedSession);
+      setStoreSnapshot(getStoreSnapshot());
       setDashboardError(null);
     } catch (error: any) {
       console.warn('Gagal memuat data dashboard:', error);
@@ -291,9 +432,6 @@ export default function DashboardScreen() {
     }
   }, []);
 
-  // -----------------------------------------------------------------------
-  // OFFLINE HANDLING & REKONEKSI OTOMATIS
-  // -----------------------------------------------------------------------
   const { isOffline } = useNetworkStatus({
     onReconnect: async () => {
       await loadDashboardData();
@@ -306,13 +444,9 @@ export default function DashboardScreen() {
     async function init() {
       try {
         const savedSession = await getSavedSession();
-        if (isMounted && savedSession) {
-          setSession(savedSession);
-          setCurrentUser(savedSession.user);
-        }
-        const data = getLoadedInventoryData();
         if (isMounted) {
-          setInventoryData(data);
+          setSession(savedSession);
+          setStoreSnapshot(getStoreSnapshot());
         }
       } catch (err) {
         console.warn('Gagal memuat dashboard:', err);
@@ -329,1276 +463,2567 @@ export default function DashboardScreen() {
     };
   }, []);
 
-  // Handler Pull-to-refresh
   const onRefresh = async () => {
     setIsRefreshing(true);
     await loadDashboardData();
   };
 
-  // -----------------------------------------------------------------------
-  // HANDLER: Logout & Navigasi router.replace()
-  // -----------------------------------------------------------------------
-  const handleLogout = async () => {
-    Alert.alert(
+  const handleLogout = () => {
+    showAppConfirm(
       'Konfirmasi Keluar',
       'Apakah Anda yakin ingin keluar dari akun EduStock?',
-      [
-        { text: 'Batal', style: 'cancel' },
-        {
-          text: 'Ya, Keluar',
-          style: 'destructive',
-          onPress: async () => {
-            await logout();
-            /**
-             * PERBEDAAN ROUTER:
-             * router.replace('/'): Menggantikan Dashboard dengan Login Screen,
-             * sehingga riwayat navigasi dibersihkan dan pengguna tidak bisa
-             * kembali ke dashboard tanpa autentikasi ulang.
-             */
-            router.replace('/');
-          },
-        },
-      ]
+      'Ya, Keluar',
+      async () => {
+        await logout();
+        router.replace('/');
+      },
+      true
     );
   };
 
-  // Handler Pengujian Bearer Token API Header
   const handleTestAuthHeader = async () => {
     const header = await getAuthHeader();
-    Alert.alert(
+    showAppAlert(
       'Header Autentikasi Token (HTTP Bearer)',
       `Header HTTP siap dikirim ke Backend API:\n\nAuthorization: ${
         header.Authorization || 'Tidak ada token'
-      }\n\nToken disimpan secara aman di persistent storage.`,
-      [{ text: 'Tutup', style: 'default' }]
+      }\n\nRole Token: ${currentUser.role}\nMode Sesi: ${
+        session?.isDemo ? 'Demo / Simulasi' : 'Akun Reguler'
+      }`
     );
   };
 
-  // Tampilan Loading Screen Awal (State Loading)
+  const openMenuSheet = () => {
+    const roleKey =
+      currentUser.username === 'staff'
+        ? 'staff'
+        : currentUser.username === 'manager'
+        ? 'manager'
+        : 'admin';
+    setPendingRoleKey(roleKey);
+    setMenuViewMode('menu');
+    setIsMenuModalVisible(true);
+  };
+
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563eb" />
-        <Text style={styles.loadingText}>Memuat Dashboard EduStock...</Text>
-      </SafeAreaView>
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={UI.colors.primary} />
+          <Text style={styles.loadingText}>Memuat Dashboard EduStock...</Text>
+        </SafeAreaView>
+      </SoftBlueBackdrop>
     );
   }
 
-  // Tampilan Error Screen (State Error & Retry)
+  // Guard Route: Jika belum terautentikasi / token tidak ada -> Tolak Akses
+  if (!session || !authorizeAction(session, 'dashboard:view').allowed) {
+    return (
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.safeArea}>
+          <AccessDeniedView
+            title="Sesi Autentikasi Diperlukan"
+            message="Anda belum masuk atau sesi token telah berakhir. Silakan login menggunakan akun EduStock Anda."
+            actionLabel="Masuk ke Halaman Login"
+            onAction={() => router.replace('/')}
+          />
+        </SafeAreaView>
+      </SoftBlueBackdrop>
+    );
+  }
+
   if (dashboardError) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <View style={styles.errorIconBadge}>
-          <Feather name="alert-triangle" size={42} color="#dc2626" />
-        </View>
-        <Text style={styles.dashboardErrorTitle}>Gagal Memuat Dashboard</Text>
-        <Text style={styles.dashboardErrorSubtitle}>{dashboardError}</Text>
-        <TouchableOpacity
-          style={styles.dashboardRetryBtn}
-          activeOpacity={0.8}
-          onPress={loadDashboardData}
-        >
-          <Feather name="refresh-cw" size={15} color="#ffffff" style={{ marginRight: 6 }} />
-          <Text style={styles.dashboardRetryBtnText}>Coba Lagi</Text>
-        </TouchableOpacity>
-      </SafeAreaView>
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.loadingContainer}>
+          <View style={styles.errorIconBadge}>
+            <Feather name="alert-triangle" size={36} color={UI.colors.dangerDark} />
+          </View>
+          <Text style={styles.dashboardErrorTitle}>Gagal Memuat Dashboard</Text>
+          <Text style={styles.dashboardErrorSubtitle}>{dashboardError}</Text>
+          <PrimaryGradientButton
+            label="Coba Lagi"
+            onPress={loadDashboardData}
+            iconLeft={<Feather name="refresh-cw" size={15} color="#FFFFFF" />}
+            style={{ paddingHorizontal: 24, marginTop: 8 }}
+          />
+        </SafeAreaView>
+      </SoftBlueBackdrop>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* Top Header App Bar */}
-      <View style={styles.dashHeader}>
-        <View style={styles.dashHeaderLeft}>
-          <View style={styles.miniLogoCube}>
-            <Feather name="box" size={14} color="#ffffff" />
-          </View>
-          <Text style={styles.dashHeaderTitle}>EduStock Inventory</Text>
-        </View>
-
-        {/* Tombol Logout (Menggunakan router.replace('/')) */}
-        <TouchableOpacity
-          style={styles.logoutBtn}
-          activeOpacity={0.7}
-          onPress={handleLogout}
-        >
-          <Feather name="log-out" size={13} color="#ef4444" />
-          <Text style={styles.logoutBtnText}>Keluar</Text>
-        </TouchableOpacity>
-        
-      </View>
-
-      {/* Main Scroll Content */}
-      <ScrollView
-        style={styles.dashScrollView}
-        contentContainerStyle={styles.dashScrollContent}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} colors={['#2563eb']} />
-        }
-      >
-        {/* Indikator Kondisi Offline di Dashboard */}
-        {isOffline && (
-          <View style={styles.offlineAlertCard}>
-            <Feather name="wifi-off" size={14} color="#b45309" style={{ marginRight: 8 }} />
-            <Text style={styles.offlineAlertText}>
-              Mode Offline: Koneksi internet tidak tersedia. Menampilkan data inventaris lokal.
-            </Text>
-          </View>
-        )}
-
-        {/* Dark Greeting Card */}
-        <View style={styles.darkGreetingCard}>
-          <View style={styles.darkCardTopRow}>
+    <SoftBlueBackdrop>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        {/* Top App Bar */}
+        <View style={styles.dashHeader}>
+          <View style={styles.dashHeaderLeft}>
+            <View style={styles.miniLogoCube}>
+              <Feather name="box" size={15} color="#FFFFFF" />
+            </View>
             <View>
-              <Text style={styles.greetingName}>
-                Halo, {currentUser.name} 👋
-              </Text>
-              <Text style={styles.greetingSub}>Sistem Monitoring Stok Real-time</Text>
-            </View>
-            <View style={styles.greetingRightCol}>
-              <View style={styles.roleBadge}>
-                <Text style={styles.roleBadgeText}>{currentUser.role}</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.switchAccountBtn}
-                activeOpacity={0.7}
-                onPress={handleLogout}
-              >
-                <Feather name="repeat" size={11} color="#f87171" />
-                <Text style={styles.switchAccountText}>Ganti Akun</Text>
-              </TouchableOpacity>
+              <Text style={styles.dashHeaderTitle}>EduStock</Text>
+              <Text style={styles.dashHeaderSub}>{getRoleShortTitle(currentUser.role)}</Text>
             </View>
           </View>
 
-          {/* 3 Status Chips: Hasil Perhitungan State Inventaris */}
-          <View style={styles.statusChipsRow}>
-            <View style={styles.chipItem}>
-              <View style={[styles.statusDot, { backgroundColor: '#22c55e' }]} />
-              <Text style={styles.chipText}>Aman: {summary.statusAman}</Text>
-            </View>
-            <View style={styles.chipItem}>
-              <View style={[styles.statusDot, { backgroundColor: '#f59e0b' }]} />
-              <Text style={styles.chipText}>Menipis: {summary.statusMenipis}</Text>
-            </View>
-            <View style={styles.chipItem}>
-              <View style={[styles.statusDot, { backgroundColor: '#ef4444' }]} />
-              <Text style={styles.chipText}>Habis: {summary.statusHabis}</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Card Autentikasi & Bearer Token JWT */}
-        <View style={styles.tokenCard}>
-          <View style={styles.tokenCardHeader}>
-            <View style={styles.tokenBadgeRow}>
-              <Feather name="shield" size={14} color="#0284c7" />
-              <Text style={styles.tokenTitle}>Status Autentikasi & Token</Text>
-            </View>
-            <View style={styles.activeTokenBadge}>
-              <View style={styles.activeDot} />
-              <Text style={styles.activeTokenText}>Aktif (Bearer)</Text>
-            </View>
-          </View>
-
-          <View style={styles.tokenPreviewBox}>
-            <Text style={styles.tokenLabel}>Bearer Token:</Text>
-            <Text style={styles.tokenValue} numberOfLines={showTokenDetails ? undefined : 1}>
-              {session?.token || 'Belum ada token'}
-            </Text>
-          </View>
-
-          <View style={styles.tokenMetaRow}>
-            <Text style={styles.tokenMetaText}>
-              User ID: <Text style={styles.tokenMetaBold}>{currentUser.id}</Text> • Role:{' '}
-              <Text style={styles.tokenMetaBold}>{currentUser.role}</Text>
-            </Text>
-            <TouchableOpacity onPress={() => setShowTokenDetails((prev) => !prev)}>
-              <Text style={styles.tokenToggleText}>
-                {showTokenDetails ? 'Ringkas' : 'Detail'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity style={styles.testHeaderBtn} onPress={handleTestAuthHeader}>
-            <Feather name="check-circle" size={13} color="#0369a1" />
-            <Text style={styles.testHeaderBtnText}>Uji Authorization Header API</Text>
-          </TouchableOpacity>
-          
-        </View>
-
-        {/* 2x2 Stats Summary Grid (Dapat ditekan untuk membuka halaman barang) */}
-        <View style={styles.statsGrid}>
-          {/* Card 1: Total Barang -> Menavigasi ke halaman Barang dengan router.push() */}
-          <TouchableOpacity
-            style={[styles.statCard, styles.clickableStatCard]}
-            activeOpacity={0.8}
-            onPress={() => {
-              /**
-               * PERBEDAAN ROUTER:
-               * router.push('/barang'): Menambahkan layar baru ke atas tumpukan stack.
-               * Pengguna dapat kembali ke Dashboard kapan saja dengan router.back().
-               */
-              router.push('/barang');
-            }}
-          >
-
-            <View style={styles.statCardHeader}>
-              <View style={[styles.statIconBadge, { backgroundColor: '#eff6ff' }]}>
-                <Feather name="box" size={16} color="#2563eb" />
-              </View>
-              <Text style={styles.statTitle}>Total Barang</Text>
-              <Feather name="chevron-right" size={14} color="#94a3b8" style={{ marginLeft: 'auto' }} />
-            </View>
-            <Text style={styles.statNumber}>{summary.totalBarang}</Text>
-            <Text style={styles.statLinkText}>Ketuk untuk buka katalog →</Text>
-          </TouchableOpacity>
-
-          {/* Card 2: Total Stok */}
-          <View style={styles.statCard}>
-            <View style={styles.statCardHeader}>
-              <View style={[styles.statIconBadge, { backgroundColor: '#ecfeff' }]}>
-                <Feather name="layers" size={16} color="#0891b2" />
-              </View>
-              <Text style={styles.statTitle}>Total Stok</Text>
-            </View>
-            <Text style={styles.statNumber}>{summary.totalStok}</Text>
-            <Text style={styles.statDesc}>Unit barang di gudang</Text>
-          </View>
-
-          {/* Card 3: Stok Minimum */}
-          <View style={styles.statCard}>
-            <View style={styles.statCardHeader}>
-              <View style={[styles.statIconBadge, { backgroundColor: '#fef2f2' }]}>
-                <Feather name="alert-circle" size={16} color="#dc2626" />
-              </View>
-              <Text style={styles.statTitle}>Stok Minimum</Text>
-            </View>
-            <Text style={styles.statNumber}>{summary.stokMinimumCount}</Text>
-            <Text style={styles.statDesc}>Perlu restock segera</Text>
-          </View>
-
-          {/* Card 4: Barang Masuk */}
-          <View style={styles.statCard}>
-            <View style={styles.statCardHeader}>
-              <View style={[styles.statIconBadge, { backgroundColor: '#f0fdf4' }]}>
-                <Feather name="arrow-down-circle" size={16} color="#16a34a" />
-              </View>
-              <Text style={styles.statTitle}>Barang Masuk</Text>
-            </View>
-            <Text style={styles.statNumber}>{summary.barangMasukCount}</Text>
-            <Text style={styles.statDesc}>Total akumulasi masuk</Text>
-          </View>
-        </View>
-
-        {/* Warning Box: Peringatan Stok Perlu Perhatian */}
-        <View style={styles.alertBox}>
-          <View style={styles.alertHeaderRow}>
-            <Feather name="alert-triangle" size={16} color="#dc2626" />
-            <Text style={styles.alertHeaderTitle}>
-              Peringatan Stok Perlu Perhatian ({alertItems.length})
-            </Text>
-          </View>
-          <Text style={styles.alertHeaderDesc}>
-            Terdapat barang yang telah mencapai batas minimum atau habis. Segera buat catatan Stok Masuk.
-          </Text>
-
-          {/* Render List Barang Perlu Perhatian */}
-          {alertItems.map((item: Barang) => (
+          <View style={styles.dashHeaderRight}>
             <TouchableOpacity
-              key={item.id}
-              style={styles.alertItemCard}
-              activeOpacity={0.8}
-              onPress={() => router.push('/barang')}
+              style={styles.headerBellBtn}
+              activeOpacity={0.75}
+              onPress={() => {
+                if (isManager) {
+                  setIsApprovalModalVisible(true);
+                } else {
+                  setIsMutasiModalVisible(true);
+                }
+              }}
             >
-              <View style={styles.alertItemTopRow}>
-                <Text style={styles.alertItemTitle}>{item.nama_barang}</Text>
-                <View
-                  style={[
-                    styles.menipisBadge,
-                    item.stok === 0 && { backgroundColor: '#fee2e2', borderColor: '#fca5a5' },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.menipisText,
-                      item.stok === 0 && { color: '#dc2626' },
-                    ]}
-                  >
-                    • {item.status_stok}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.alertItemSpecs}>
-                {item.kode_barang} • Sisa:{' '}
-                <Text style={styles.boldRed}>
-                  {item.stok} {item.satuan}
-                </Text>{' '}
-                (Min: {item.stok_minimum}) • {item.lokasi_rak}
-              </Text>
+              <Feather name="bell" size={16} color={UI.colors.text} />
+              {(isManager ? pendingKoreksiCount > 0 : alertItems.length > 0) && (
+                <View style={styles.headerBellDot} />
+              )}
             </TouchableOpacity>
-          ))}
+
+            <TouchableOpacity
+              style={styles.logoutBtn}
+              activeOpacity={0.75}
+              onPress={handleLogout}
+            >
+              <Feather name="log-out" size={14} color={UI.colors.dangerDark} />
+              <Text style={styles.logoutBtnText}>Keluar</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Aksi Cepat Inventory */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Aksi Cepat Inventory</Text>
-        </View>
-        <View style={styles.quickActionsRow}>
-          {/* Scan Barcode (Sensor Kamera) */}
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#f5f3ff', borderColor: '#ddd6fe' }]}
-            onPress={() => router.push('/scanner')}
-          >
-            <View style={[styles.actionCircle, { backgroundColor: '#7c3aed' }]}>
-              <Feather name="camera" size={17} color="#ffffff" />
-            </View>
-            <Text style={[styles.actionText, { color: '#7c3aed' }]}>Scan Barcode</Text>
-          </TouchableOpacity>
-
-          {/* Stok Masuk (Aktif Interaktif) */}
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}
-            onPress={() => openStokModal('masuk')}
-          >
-            <View style={[styles.actionCircle, { backgroundColor: '#16a34a' }]}>
-              <Feather name="plus" size={17} color="#ffffff" />
-            </View>
-            <Text style={[styles.actionText, { color: '#16a34a' }]}>Stok Masuk</Text>
-          </TouchableOpacity>
-
-          {/* Stok Keluar (Aktif Interaktif) */}
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]}
-            onPress={() => openStokModal('keluar')}
-          >
-            <View style={[styles.actionCircle, { backgroundColor: '#dc2626' }]}>
-              <Feather name="minus" size={17} color="#ffffff" />
-            </View>
-            <Text style={[styles.actionText, { color: '#dc2626' }]}>Stok Keluar</Text>
-          </TouchableOpacity>
-
-          {/* Buka Daftar Barang (router.push) */}
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#eff6ff', borderColor: '#bfdbfe' }]}
-            onPress={() => router.push('/barang')}
-          >
-            <View style={[styles.actionCircle, { backgroundColor: '#2563eb' }]}>
-              <Feather name="box" size={17} color="#ffffff" />
-            </View>
-            <Text style={[styles.actionText, { color: '#2563eb' }]}>Barang</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Validasi Lokasi Gudang & Geofencing (EduStock Location) */}
-        <TouchableOpacity
-          style={styles.locationBannerCard}
-          activeOpacity={0.8}
-          onPress={() => router.push('/lokasi' as any)}
+        {/* Main Scroll Content */}
+        <ScrollView
+          style={styles.dashScrollView}
+          contentContainerStyle={styles.dashScrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={onRefresh}
+              colors={[UI.colors.primary]}
+            />
+          }
         >
-          <View style={styles.locationBannerLeft}>
-            <View style={styles.locationBannerIconCircle}>
-              <MaterialCommunityIcons name="map-marker-radius" size={20} color="#7c3aed" />
-            </View>
-            <View style={styles.locationBannerTextWrap}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={styles.locationBannerTag}>ZONA GUDANG</Text>
-                <Text style={styles.locationBannerTitle}>Lokasi & Presensi Gudang</Text>
-              </View>
-              <Text style={styles.locationBannerSub}>
-                Validasi Geofence Staf & Otorisasi Mutasi Stok
+          {isOffline && (
+            <View style={styles.offlineAlertCard}>
+              <Feather
+                name="wifi-off"
+                size={15}
+                color={UI.colors.warningDark}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={styles.offlineAlertText}>
+                Mode Offline: Menampilkan data inventaris lokal.
               </Text>
             </View>
+          )}
+
+          {/* Greeting Section */}
+          <View style={styles.greetingRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.greetingName}>Halo, {currentUser.name} 👋</Text>
+              <View style={styles.greetingRoleRow}>
+                <View style={styles.roleBadge}>
+                  <Text style={styles.roleBadgeText}>{getRoleShortTitle(currentUser.role)}</Text>
+                </View>
+                <View style={styles.sessionTypePill}>
+                  <Text style={styles.sessionTypeText}>
+                    {session.isDemo ? 'Mode Demo' : 'Sesi Reguler'}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={handleLogout} activeOpacity={0.7}>
+                  <Text style={styles.switchAccountLink}>Ganti Akun</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
-          <Feather name="chevron-right" size={18} color="#7c3aed" />
-        </TouchableOpacity>
 
-        {/* Aktivitas Stok Terbaru */}
-        <View style={styles.activityHeaderRow}>
-          <Text style={styles.sectionTitle}>Aktivitas Stok Terbaru</Text>
-          <TouchableOpacity onPress={() => setIsMutasiModalVisible(true)}>
-            <Text style={styles.linkViewAll}>Lihat Semua Mutasi →</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.activityCard}>
-          {transaksiList.map((trx: TransaksiStok, index: number) => {
-            const isMasuk = trx.jenis === 'masuk';
-            const isLast = index === transaksiList.length - 1;
-
-            return (
-              <View
-                key={trx.id}
-                style={[styles.activityItem, isLast && { borderBottomWidth: 0 }]}
-              >
-                <View
-                  style={[
-                    styles.activityCircle,
-                    { backgroundColor: isMasuk ? '#f0fdf4' : '#fef2f2' },
-                  ]}
-                >
-                  <Feather
-                    name={isMasuk ? 'arrow-down' : 'arrow-up'}
-                    size={15}
-                    color={isMasuk ? '#16a34a' : '#ef4444'}
-                  />
-                </View>
-                <View style={styles.activityDetails}>
-                  <View style={styles.activityTopLine}>
-                    <Text style={styles.activityItemName}>{trx.nama_barang}</Text>
-                    <Text
-                      style={[
-                        styles.activityItemDiff,
-                        { color: isMasuk ? '#16a34a' : '#dc2626' },
-                      ]}
-                    >
-                      {isMasuk ? `+${trx.jumlah}` : `-${trx.jumlah}`} {trx.satuan}
-                    </Text>
-                  </View>
-                  <View style={styles.activityBottomLine}>
-                    <Text style={styles.activityMeta}>
-                      {trx.tanggal} • {trx.operator} ({trx.role_operator})
-                    </Text>
-                    <Text style={styles.activityRemain}>Sisa: {trx.sisa_stok}</Text>
-                  </View>
-                </View>
+          {/* Status Strip Card (Aman / Menipis / Habis) */}
+          <View style={styles.statusStripCard}>
+            <View style={styles.statusCol}>
+              <View style={styles.statusLabelRow}>
+                <View style={[styles.statusDot, { backgroundColor: UI.colors.success }]} />
+                <Text style={styles.statusColLabel}>Aman</Text>
               </View>
-            );
-          })}
-        </View>
-
-        <View style={{ height: 30 }} />
-      </ScrollView>
-
-      {/* Sticky Bottom Navigation Bar */}
-      <View style={styles.bottomNav}>
-        {/* Tab 1: Dashboard (Aktif) */}
-        <TouchableOpacity style={styles.navItem} onPress={() => {}}>
-          <Ionicons name="home" size={22} color="#2563eb" />
-          <Text style={[styles.navLabel, { color: '#2563eb' }]}>Dashboard</Text>
-        </TouchableOpacity>
-
-        {/* Tab 2: Barang -> Membuka screen Barang dengan router.push('/barang') */}
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => router.push('/barang')}
-        >
-          <Feather name="box" size={22} color="#64748b" />
-          <Text style={styles.navLabel}>Barang</Text>
-        </TouchableOpacity>
-
-        {/* Tab 3: Mutasi Stok */}
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setIsMutasiModalVisible(true)}
-        >
-          <MaterialCommunityIcons name="swap-vertical" size={22} color={isMutasiModalVisible ? '#2563eb' : '#64748b'} />
-          <Text style={[styles.navLabel, isMutasiModalVisible && { color: '#2563eb' }]}>Mutasi Stok</Text>
-        </TouchableOpacity>
-
-        {/* Tab 4: Laporan */}
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setIsLaporanModalVisible(true)}
-        >
-          <Feather name="file-text" size={22} color={isLaporanModalVisible ? '#2563eb' : '#64748b'} />
-          <Text style={[styles.navLabel, isLaporanModalVisible && { color: '#2563eb' }]}>Laporan</Text>
-        </TouchableOpacity>
-
-        {/* Tab 5: Menu Profil */}
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setIsMenuModalVisible(true)}
-        >
-          <Feather name="grid" size={22} color={isMenuModalVisible ? '#2563eb' : '#64748b'} />
-          <Text style={[styles.navLabel, isMenuModalVisible && { color: '#2563eb' }]}>Menu</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ============================================================= */}
-      {/* MODAL FORMULIR TRANSAKSI: STOK MASUK & STOK KELUAR           */}
-      {/* Memenuhi Kriteria Modul 2: useState untuk Form & Mutasi State */}
-      {/* ============================================================= */}
-      <Modal
-        visible={stokModalType !== null}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setStokModalType(null)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.transaksiModalContent}>
-            {/* Modal Header */}
-            <View style={styles.transaksiModalHeader}>
-              <View style={styles.transaksiHeaderLeft}>
-                <View
-                  style={[
-                    styles.transaksiIconCircle,
-                    {
-                      backgroundColor:
-                        stokModalType === 'masuk' ? '#f0fdf4' : '#fef2f2',
-                    },
-                  ]}
-                >
-                  <Feather
-                    name={stokModalType === 'masuk' ? 'arrow-down-circle' : 'arrow-up-circle'}
-                    size={22}
-                    color={stokModalType === 'masuk' ? '#16a34a' : '#dc2626'}
-                  />
-                </View>
-                <View>
-                  <Text style={styles.transaksiModalTitle}>
-                    {stokModalType === 'masuk' ? 'Formulir Stok Masuk' : 'Formulir Stok Keluar'}
-                  </Text>
-                  <Text style={styles.transaksiModalSubtitle}>
-                    {stokModalType === 'masuk'
-                      ? 'Tambah stok unit barang masuk gudang'
-                      : 'Catat pengurangan stok barang keluar gudang'}
-                  </Text>
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={styles.transaksiCloseBtn}
-                onPress={() => setStokModalType(null)}
-              >
-                <Feather name="x" size={18} color="#64748b" />
-              </TouchableOpacity>
+              <Text style={styles.statusColValue}>{summary.statusAman}</Text>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
-              {/* Field 1: Pilih Barang */}
-              <View style={styles.formSection}>
-                <Text style={styles.formSectionLabel}>1. Pilih Barang Inventaris:</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.barangScrollPills}
-                >
-                  {inventoryData.barangList.map((item) => {
-                    const isSelected = item.id === selectedBarang?.id;
-                    return (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[
-                          styles.barangSelectPill,
-                          isSelected && styles.barangSelectPillActive,
-                        ]}
-                        activeOpacity={0.7}
-                        onPress={() => setSelectedBarangId(item.id)}
-                      >
-                        <Text
-                          style={[
-                            styles.barangSelectName,
-                            isSelected && styles.barangSelectNameActive,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item.nama_barang}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.barangSelectSub,
-                            isSelected && styles.barangSelectSubActive,
-                          ]}
-                        >
-                          {item.kode_barang} • Stok: {item.stok} {item.satuan}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
+            <View style={styles.statusDivider} />
+
+            <View style={styles.statusCol}>
+              <View style={styles.statusLabelRow}>
+                <View style={[styles.statusDot, { backgroundColor: UI.colors.warning }]} />
+                <Text style={styles.statusColLabel}>Menipis</Text>
               </View>
+              <Text style={styles.statusColValue}>{summary.statusMenipis}</Text>
+            </View>
 
-              {/* Field 2: Jumlah Unit */}
-              <View style={styles.formSection}>
-                <Text style={styles.formSectionLabel}>2. Jumlah Unit:</Text>
-                <View style={styles.stepperContainer}>
-                  <TouchableOpacity
-                    style={styles.stepBtn}
-                    activeOpacity={0.7}
-                    onPress={() => changeJumlah(-1)}
-                  >
-                    <Feather name="minus" size={18} color="#1e293b" />
-                  </TouchableOpacity>
+            <View style={styles.statusDivider} />
 
-                  <TextInput
-                    style={styles.qtyInput}
-                    keyboardType="number-pad"
-                    value={jumlahInput}
-                    onChangeText={setJumlahInput}
-                    selectTextOnFocus
-                  />
-
-                  <TouchableOpacity
-                    style={styles.stepBtn}
-                    activeOpacity={0.7}
-                    onPress={() => changeJumlah(1)}
-                  >
-                    <Feather name="plus" size={18} color="#1e293b" />
-                  </TouchableOpacity>
-
-                  {/* Quick Shortcut Buttons */}
-                  <TouchableOpacity
-                    style={styles.quickAddPill}
-                    onPress={() => changeJumlah(5)}
-                  >
-                    <Text style={styles.quickAddText}>+5</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.quickAddPill}
-                    onPress={() => changeJumlah(10)}
-                  >
-                    <Text style={styles.quickAddText}>+10</Text>
-                  </TouchableOpacity>
-                </View>
+            <View style={styles.statusCol}>
+              <View style={styles.statusLabelRow}>
+                <View style={[styles.statusDot, { backgroundColor: UI.colors.danger }]} />
+                <Text style={styles.statusColLabel}>Habis</Text>
               </View>
+              <Text style={styles.statusColValue}>{summary.statusHabis}</Text>
+            </View>
+          </View>
 
-              {/* Field 3: Keterangan / Keperluan */}
-              <View style={styles.formSection}>
-                <Text style={styles.formSectionLabel}>3. Catatan / Keperluan:</Text>
-                <TextInput
-                  style={styles.catatanInput}
-                  placeholder="Contoh: Pengadaan Baru, Distribusi Ruang Lab..."
-                  placeholderTextColor="#94a3b8"
-                  value={catatanInput}
-                  onChangeText={setCatatanInput}
-                />
+          {/* ============================================================= */}
+          {/* KONTEN KHUSUS PER ROLE (3 PENGALAMAN DASHBOARD BERBEDA)       */}
+          {/* ============================================================= */}
+
+          {isAdmin && (
+            <>
+              {/* ADMIN GUDANG: KPI Penuh */}
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Ringkasan Kendali Gudang</Text>
               </View>
-
-              {/* Preview Kalkulasi Stok Otomatis */}
-              {selectedBarang ? (
-                <View
-                  style={[
-                    styles.calcPreviewCard,
-                    isStokKurang && styles.calcPreviewCardError,
-                  ]}
-                >
-                  <Text style={styles.calcPreviewTitle}>Ringkasan Perubahan Stok:</Text>
-                  <View style={styles.calcRow}>
-                    <Text style={styles.calcLabel}>Barang:</Text>
-                    <Text style={styles.calcValue}>{selectedBarang.nama_barang}</Text>
-                  </View>
-                  <View style={styles.calcRow}>
-                    <Text style={styles.calcLabel}>Stok Gudang Saat Ini:</Text>
-                    <Text style={styles.calcValue}>
-                      {selectedBarang.stok} {selectedBarang.satuan}
-                    </Text>
-                  </View>
-                  <View style={styles.calcRow}>
-                    <Text style={styles.calcLabel}>
-                      Perubahan ({stokModalType === 'masuk' ? 'Masuk' : 'Keluar'}):
-                    </Text>
-                    <Text
-                      style={[
-                        styles.calcValue,
-                        {
-                          color: stokModalType === 'masuk' ? '#16a34a' : '#dc2626',
-                          fontWeight: '800',
-                        },
-                      ]}
-                    >
-                      {stokModalType === 'masuk' ? `+${parsedJumlah}` : `-${parsedJumlah}`}{' '}
-                      {selectedBarang.satuan}
-                    </Text>
-                  </View>
-                  <View style={[styles.calcRow, styles.calcRowTotal]}>
-                    <Text style={styles.calcTotalLabel}>Estimasi Stok Akhir:</Text>
-                    <Text
-                      style={[
-                        styles.calcTotalValue,
-                        isStokKurang && { color: '#dc2626' },
-                      ]}
-                    >
-                      {estimasiStokAkhir} {selectedBarang.satuan}
-                    </Text>
-                  </View>
-
-                  {/* Peringatan jika stok tidak cukup */}
-                  {isStokKurang ? (
-                    <View style={styles.errorWarnBox}>
-                      <Feather name="alert-circle" size={14} color="#dc2626" />
-                      <Text style={styles.errorWarnText}>
-                        Jumlah melebihi stok yang tersedia saat ini!
-                      </Text>
+              <View style={styles.statsGrid}>
+                <View style={styles.statsRow}>
+                  <TouchableOpacity
+                    style={[styles.statCard, styles.clickableStatCard]}
+                    activeOpacity={0.8}
+                    onPress={() => router.push('/barang')}
+                  >
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="box" size={16} color={UI.colors.primary} />
+                      </View>
+                      <Feather name="arrow-up-right" size={15} color={UI.colors.primary} />
                     </View>
-                  ) : null}
+                    <Text style={styles.statNumber}>{summary.totalBarang}</Text>
+                    <Text style={styles.statTitle}>Kelola Barang</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.statCard}>
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="layers" size={16} color={UI.colors.primary} />
+                      </View>
+                    </View>
+                    <Text style={styles.statNumber}>{summary.totalStok}</Text>
+                    <Text style={styles.statTitle}>Total Unit Stok</Text>
+                  </View>
                 </View>
-              ) : null}
-            </ScrollView>
 
-            {/* Action Buttons */}
-            <View style={styles.modalActionButtons}>
-              <TouchableOpacity
-                style={styles.modalBatalBtn}
-                onPress={() => setStokModalType(null)}
-              >
-                <Text style={styles.modalBatalBtnText}>Batal</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.modalSubmitBtn,
-                  {
-                    backgroundColor:
-                      stokModalType === 'masuk' ? '#16a34a' : '#dc2626',
-                  },
-                  isStokKurang && { opacity: 0.5 },
-                ]}
-                disabled={isStokKurang}
-                onPress={handleSimpanTransaksi}
-              >
-                <Feather name="check" size={16} color="#ffffff" />
-                <Text style={styles.modalSubmitBtnText}>
-                  {stokModalType === 'masuk' ? 'Simpan Stok Masuk' : 'Simpan Stok Keluar'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ============================================================= */}
-      {/* 1. MODAL MUTASI STOK LENGKAP                                  */}
-      {/* ============================================================= */}
-      <Modal
-        visible={isMutasiModalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setIsMutasiModalVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.sheetModalContent}>
-            {/* Modal Header */}
-            <View style={styles.sheetModalHeader}>
-              <View style={styles.sheetHeaderLeft}>
-                <View style={[styles.sheetIconCircle, { backgroundColor: '#eff6ff' }]}>
-                  <MaterialCommunityIcons name="swap-vertical" size={22} color="#2563eb" />
-                </View>
-                <View>
-                  <Text style={styles.sheetModalTitle}>Riwayat Mutasi Stok</Text>
-                  <Text style={styles.sheetModalSubtitle}>
-                    Total {inventoryData.transaksiList.length} aktivitas log pergerakan stok
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.sheetCloseBtn}
-                onPress={() => setIsMutasiModalVisible(false)}
-              >
-                <Feather name="x" size={18} color="#64748b" />
-              </TouchableOpacity>
-            </View>
-
-            {/* Filter Pills */}
-            <View style={styles.mutasiFilterRow}>
-              <TouchableOpacity
-                style={[
-                  styles.mutasiFilterPill,
-                  mutasiFilter === 'semua' && styles.mutasiFilterPillActive,
-                ]}
-                onPress={() => setMutasiFilter('semua')}
-              >
-                <Text
-                  style={[
-                    styles.mutasiFilterText,
-                    mutasiFilter === 'semua' && styles.mutasiFilterTextActive,
-                  ]}
-                >
-                  Semua ({inventoryData.transaksiList.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.mutasiFilterPill,
-                  mutasiFilter === 'masuk' && styles.mutasiFilterPillActiveMasuk,
-                ]}
-                onPress={() => setMutasiFilter('masuk')}
-              >
-                <View style={[styles.filterDot, { backgroundColor: '#16a34a' }]} />
-                <Text
-                  style={[
-                    styles.mutasiFilterText,
-                    mutasiFilter === 'masuk' && styles.mutasiFilterTextActiveMasuk,
-                  ]}
-                >
-                  Masuk ({countMutasiMasuk})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.mutasiFilterPill,
-                  mutasiFilter === 'keluar' && styles.mutasiFilterPillActiveKeluar,
-                ]}
-                onPress={() => setMutasiFilter('keluar')}
-              >
-                <View style={[styles.filterDot, { backgroundColor: '#dc2626' }]} />
-                <Text
-                  style={[
-                    styles.mutasiFilterText,
-                    mutasiFilter === 'keluar' && styles.mutasiFilterTextActiveKeluar,
-                  ]}
-                >
-                  Keluar ({countMutasiKeluar})
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* List Mutasi */}
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              style={{ maxHeight: 380, marginVertical: 8 }}
-            >
-              {filteredMutasiList.length === 0 ? (
-                <View style={styles.emptyMutasiBox}>
-                  <Feather name="inbox" size={32} color="#94a3b8" />
-                  <Text style={styles.emptyMutasiText}>
-                    Belum ada riwayat mutasi untuk filter ini.
-                  </Text>
-                </View>
-              ) : (
-                filteredMutasiList.map((trx: TransaksiStok) => {
-                  const isMasuk = trx.jenis === 'masuk';
-                  return (
-                    <View key={trx.id} style={styles.mutasiItemCard}>
+                <View style={styles.statsRow}>
+                  <View style={styles.statCard}>
+                    <View style={styles.statTopRow}>
                       <View
                         style={[
-                          styles.mutasiTypeBadge,
-                          { backgroundColor: isMasuk ? '#f0fdf4' : '#fef2f2' },
+                          styles.statIconBadge,
+                          summary.stokMinimumCount > 0 && { backgroundColor: UI.colors.dangerBg },
                         ]}
                       >
                         <Feather
-                          name={isMasuk ? 'arrow-down-left' : 'arrow-up-right'}
-                          size={18}
-                          color={isMasuk ? '#16a34a' : '#ef4444'}
+                          name="alert-circle"
+                          size={16}
+                          color={
+                            summary.stokMinimumCount > 0
+                              ? UI.colors.dangerDark
+                              : UI.colors.primary
+                          }
                         />
                       </View>
-                      <View style={styles.mutasiItemInfo}>
-                        <View style={styles.mutasiItemHeaderRow}>
-                          <Text style={styles.mutasiItemName}>{trx.nama_barang}</Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.statNumber,
+                        summary.stokMinimumCount > 0 && { color: UI.colors.dangerDark },
+                      ]}
+                    >
+                      {summary.stokMinimumCount}
+                    </Text>
+                    <Text style={styles.statTitle}>Stok Minimum</Text>
+                  </View>
+
+                  <View style={styles.statCard}>
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="users" size={16} color={UI.colors.primary} />
+                      </View>
+                    </View>
+                    <Text style={styles.statNumber}>{managedUsers.length}</Text>
+                    <Text style={styles.statTitle}>Pengguna Terdaftar</Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Aksi Cepat Admin: Masuk, Keluar, Koreksi Stok, Kelola Barang */}
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Aksi Cepat Administrator</Text>
+              </View>
+              <View style={styles.quickActionsCard}>
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => openStokModal('masuk')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="plus" size={18} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Stok{'\n'}Masuk</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => openStokModal('keluar')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="minus" size={18} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Stok{'\n'}Keluar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={openKoreksiModal}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="sliders" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Koreksi{'\n'}Stok</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/scanner')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="camera" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Scan{'\n'}Barcode</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Panel Administrasi Sistem Eksklusif Admin */}
+              <View style={styles.adminControlRow}>
+                <TouchableOpacity
+                  style={styles.adminControlCard}
+                  activeOpacity={0.8}
+                  onPress={() => setIsUsersModalVisible(true)}
+                >
+                  <View style={styles.adminControlIcon}>
+                    <Feather name="users" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.adminControlTitle}>Kelola Pengguna</Text>
+                  <Text style={styles.adminControlSub}>
+                    {managedUsers.filter((u) => u.aktif !== false).length} akun aktif
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.adminControlCard}
+                  activeOpacity={0.8}
+                  onPress={openWarehouseModal}
+                >
+                  <View style={styles.adminControlIcon}>
+                    <Feather name="settings" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.adminControlTitle}>Pengaturan Gudang</Text>
+                  <Text style={styles.adminControlSub}>
+                    Radius {warehouseConfig.radius_geofence}m
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {isStaff && (
+            <>
+              {/* STAFF INVENTORY: Fokus Operasional Harian (Tanpa Valuasi & Pengaturan Sistem) */}
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Ringkasan Operasional</Text>
+              </View>
+              <View style={styles.statsGrid}>
+                <View style={styles.statsRow}>
+                  <TouchableOpacity
+                    style={[styles.statCard, styles.clickableStatCard]}
+                    activeOpacity={0.8}
+                    onPress={() => router.push('/barang')}
+                  >
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="box" size={16} color={UI.colors.primary} />
+                      </View>
+                      <Feather name="arrow-up-right" size={15} color={UI.colors.primary} />
+                    </View>
+                    <Text style={styles.statNumber}>{summary.totalBarang}</Text>
+                    <Text style={styles.statTitle}>Katalog Barang</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.statCard}>
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="activity" size={16} color={UI.colors.primary} />
+                      </View>
+                    </View>
+                    <Text style={styles.statNumber}>{scopedTransaksiList.length}</Text>
+                    <Text style={styles.statTitle}>Transaksi Saya</Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Status Presensi Staff Hari Ini */}
+              <TouchableOpacity
+                style={styles.presensiStatusCard}
+                activeOpacity={0.82}
+                onPress={() => router.push('/lokasi' as any)}
+              >
+                <View style={styles.presensiIconCircle}>
+                  <Feather name="map-pin" size={18} color="#FFFFFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.presensiCardTitle}>Presensi GPS Gudang</Text>
+                  <Text style={styles.presensiCardSub}>
+                    {myLatestPresensi
+                      ? `Terakhir: ${myLatestPresensi.tanggal} • ${myLatestPresensi.waktu} (${
+                          myLatestPresensi.dalam_area ? 'Dalam Area' : 'Di Luar Area'
+                        })`
+                      : 'Belum ada presensi tercatat hari ini'}
+                  </Text>
+                </View>
+                <View style={styles.presensiActionBadge}>
+                  <Text style={styles.presensiActionText}>Presensi</Text>
+                </View>
+              </TouchableOpacity>
+
+              {/* Aksi Cepat Staff */}
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Aksi Cepat Operasional</Text>
+              </View>
+              <View style={styles.quickActionsCard}>
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => openStokModal('masuk')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="plus" size={18} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Stok{'\n'}Masuk</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => openStokModal('keluar')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="minus" size={18} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Stok{'\n'}Keluar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/scanner')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="camera" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Scan{'\n'}Barcode</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/lokasi' as any)}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="navigation" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Presensi{'\n'}GPS</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {isManager && (
+            <>
+              {/* MANAJER OPERASIONAL: Monitoring Eksekutif & Persetujuan Koreksi Stok */}
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Ringkasan Manajerial</Text>
+              </View>
+              <View style={styles.statsGrid}>
+                <View style={styles.statsRow}>
+                  <TouchableOpacity
+                    style={[styles.statCard, styles.clickableStatCard]}
+                    activeOpacity={0.8}
+                    onPress={() => setIsLaporanModalVisible(true)}
+                  >
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="dollar-sign" size={16} color={UI.colors.primary} />
+                      </View>
+                      <Feather name="arrow-up-right" size={15} color={UI.colors.primary} />
+                    </View>
+                    <Text style={styles.statMoneyNumber} numberOfLines={1}>
+                      {formatRupiah(totalAsetBeli)}
+                    </Text>
+                    <Text style={styles.statTitle}>Valuasi Aset Gudang</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.statCard}>
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="trending-up" size={16} color={UI.colors.primary} />
+                      </View>
+                    </View>
+                    <Text style={[styles.statNumber, { color: UI.colors.success }]}>
+                      +{persentaseMargin}%
+                    </Text>
+                    <Text style={styles.statTitle}>Potensi Margin</Text>
+                  </View>
+                </View>
+
+                <View style={styles.statsRow}>
+                  <TouchableOpacity
+                    style={styles.statCard}
+                    activeOpacity={0.8}
+                    onPress={() => router.push('/barang')}
+                  >
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="box" size={16} color={UI.colors.primary} />
+                      </View>
+                    </View>
+                    <Text style={styles.statNumber}>{summary.totalBarang}</Text>
+                    <Text style={styles.statTitle}>Total SKU Katalog</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.statCard,
+                      pendingKoreksiCount > 0 && { borderColor: UI.colors.primaryBorder },
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => setIsApprovalModalVisible(true)}
+                  >
+                    <View style={styles.statTopRow}>
+                      <View style={styles.statIconBadge}>
+                        <Feather name="check-square" size={16} color={UI.colors.primary} />
+                      </View>
+                    </View>
+                    <Text style={styles.statNumber}>{pendingKoreksiCount}</Text>
+                    <Text style={styles.statTitle}>Menunggu Approval</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Persetujuan Koreksi Stok (Eksklusif Manajer) */}
+              <View style={styles.activityHeaderRow}>
+                <Text style={styles.sectionTitle}>Persetujuan Koreksi Stok</Text>
+                <TouchableOpacity onPress={() => setIsApprovalModalVisible(true)}>
+                  <Text style={styles.linkViewAll}>Lihat Semua ({koreksiList.length}) →</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.approvalBox}>
+                {koreksiList.filter((k) => k.status === 'pending').length === 0 ? (
+                  <View style={styles.alertEmptyBox}>
+                    <Feather name="check-circle" size={15} color={UI.colors.success} />
+                    <Text style={styles.alertEmptyText}>
+                      Tidak ada pengajuan koreksi stok yang menunggu persetujuan.
+                    </Text>
+                  </View>
+                ) : (
+                  koreksiList
+                    .filter((k) => k.status === 'pending')
+                    .map((req: KoreksiStokRequest) => (
+                      <View key={req.id} style={styles.approvalItemCard}>
+                        <View style={styles.approvalTopRow}>
+                          <Text style={styles.approvalItemName} numberOfLines={1}>
+                            {req.nama_barang}
+                          </Text>
+                          <View style={styles.pendingPill}>
+                            <Text style={styles.pendingPillText}>Menunggu</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.approvalMeta}>
+                          Sistem: {req.stok_sistem} → Fisik: {req.stok_fisik} ({req.selisih >= 0 ? `+${req.selisih}` : req.selisih} {req.satuan})
+                        </Text>
+                        <Text style={styles.approvalReason}>
+                          Alasan: {req.alasan} • Oleh {req.diajukan_oleh}
+                        </Text>
+                        <View style={styles.approvalActionsRow}>
+                          <SecondaryOutlineButton
+                            label="Tolak"
+                            onPress={() => handleReviewKoreksi(req.id, 'rejected')}
+                            style={{ flex: 1, height: 38 }}
+                            textStyle={{ fontSize: 12.5 }}
+                          />
+                          <PrimaryGradientButton
+                            label="Setujui Koreksi"
+                            onPress={() => handleReviewKoreksi(req.id, 'approved')}
+                            style={{ flex: 1.4, height: 38 }}
+                            textStyle={{ fontSize: 12.5 }}
+                          />
+                        </View>
+                      </View>
+                    ))
+                )}
+              </View>
+
+              {/* Aksi Cepat Manajer (Khusus Monitoring & Laporan — Tanpa Mutasi Rutin / Scan) */}
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Akses Monitoring</Text>
+              </View>
+              <View style={styles.quickActionsCard}>
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => setIsLaporanModalVisible(true)}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="bar-chart-2" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Laporan{'\n'}Valuasi</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => setIsMutasiModalVisible(true)}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <MaterialCommunityIcons name="swap-vertical" size={19} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Monitor{'\n'}Mutasi</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/barang')}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="box" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Lihat{'\n'}Katalog</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/lokasi' as any)}
+                >
+                  <View style={styles.quickActionCircle}>
+                    <Feather name="map-pin" size={17} color={UI.colors.primary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Lokasi &{'\n'}Presensi</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {/* Monitoring Aktivitas & Presensi Staff (Untuk Admin & Manajer) */}
+          {canMonitorStaff && (
+            <>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Monitoring Presensi Staff</Text>
+              </View>
+              <View style={styles.activityCard}>
+                {presensiLogs.slice(0, 3).map((log, idx) => {
+                  const isLast = idx === Math.min(presensiLogs.length, 3) - 1;
+                  return (
+                    <View
+                      key={log.id}
+                      style={[styles.activityItem, isLast && { borderBottomWidth: 0 }]}
+                    >
+                      <View
+                        style={[
+                          styles.activityCircle,
+                          {
+                            backgroundColor: log.dalam_area
+                              ? UI.colors.successBg
+                              : UI.colors.dangerBg,
+                          },
+                        ]}
+                      >
+                        <Feather
+                          name="map-pin"
+                          size={14}
+                          color={log.dalam_area ? UI.colors.success : UI.colors.dangerDark}
+                        />
+                      </View>
+                      <View style={styles.activityDetails}>
+                        <View style={styles.activityTopLine}>
+                          <Text style={styles.activityItemName} numberOfLines={1}>
+                            {log.nama} ({log.role})
+                          </Text>
                           <Text
                             style={[
-                              styles.mutasiItemQty,
-                              { color: isMasuk ? '#16a34a' : '#dc2626' },
+                              styles.activityItemDiff,
+                              {
+                                color: log.dalam_area
+                                  ? UI.colors.success
+                                  : UI.colors.dangerDark,
+                              },
+                            ]}
+                          >
+                            {log.dalam_area ? 'Dalam Area' : 'Luar Area'}
+                          </Text>
+                        </View>
+                        <Text style={styles.activityMeta} numberOfLines={1}>
+                          {log.tanggal} • {log.waktu} • Jarak {log.jarak_meter}m
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </>
+          )}
+
+          {/* Lokasi Gudang Banner (Akses semua role dengan peran berbeda di halaman Lokasi) */}
+          <TouchableOpacity
+            style={styles.locationBannerCard}
+            activeOpacity={0.82}
+            onPress={() => router.push('/lokasi' as any)}
+          >
+            <View style={styles.locationBannerLeft}>
+              <View style={styles.locationBannerIconCircle}>
+                <MaterialCommunityIcons
+                  name="map-marker-radius"
+                  size={21}
+                  color="#FFFFFF"
+                />
+              </View>
+              <View style={styles.locationBannerTextWrap}>
+                <View style={styles.locationTitleRow}>
+                  <Text style={styles.locationBannerTitle}>Lokasi & Presensi Gudang</Text>
+                  <View style={styles.locationBannerTagPill}>
+                    <Text style={styles.locationBannerTag}>MAPS</Text>
+                  </View>
+                </View>
+                <Text style={styles.locationBannerSub}>
+                  {isAdmin
+                    ? 'Kelola geofence, GPS real-time & radius gudang'
+                    : isStaff
+                    ? 'Presensi GPS staf & cek area geofence'
+                    : 'Monitoring lokasi gudang & kehadiran staff'}
+                </Text>
+              </View>
+            </View>
+            <Feather name="chevron-right" size={18} color={UI.colors.primary} />
+          </TouchableOpacity>
+
+          {/* Peringatan Stok Minimum */}
+          <View style={styles.alertBox}>
+            <View style={styles.alertHeaderRow}>
+              <View style={styles.alertHeaderLeft}>
+                <View style={styles.alertIconBadge}>
+                  <Feather name="alert-triangle" size={15} color={UI.colors.dangerDark} />
+                </View>
+                <View>
+                  <Text style={styles.alertHeaderTitle}>Peringatan Stok Minimum</Text>
+                  <Text style={styles.alertHeaderDesc}>Perlu perhatian segera</Text>
+                </View>
+              </View>
+              <View style={styles.alertCountPill}>
+                <Text style={styles.alertCountText}>{alertItems.length}</Text>
+              </View>
+            </View>
+
+            {alertItems.length === 0 ? (
+              <View style={styles.alertEmptyBox}>
+                <Feather name="check-circle" size={15} color={UI.colors.success} />
+                <Text style={styles.alertEmptyText}>Semua stok dalam kondisi aman.</Text>
+              </View>
+            ) : (
+              alertItems.map((item: Barang, idx: number) => {
+                const isHabis = item.stok === 0;
+                const isLast = idx === alertItems.length - 1;
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[styles.alertItemCard, isLast && { marginBottom: 0 }]}
+                    activeOpacity={0.78}
+                    onPress={() => router.push('/barang')}
+                  >
+                    <View style={styles.alertItemBody}>
+                      <View style={styles.alertItemTopRow}>
+                        <Text style={styles.alertItemTitle} numberOfLines={1}>
+                          {item.nama_barang}
+                        </Text>
+                        <View
+                          style={[
+                            styles.statusPillSmall,
+                            isHabis
+                              ? { backgroundColor: UI.colors.dangerBg, borderColor: UI.colors.dangerBorder }
+                              : { backgroundColor: UI.colors.warningBg, borderColor: UI.colors.warningBorder },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.statusPillSmallText,
+                              { color: isHabis ? UI.colors.dangerDark : UI.colors.warningDark },
+                            ]}
+                          >
+                            {item.status_stok}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.alertItemSpecs}>
+                        {item.kode_barang} • Sisa{' '}
+                        <Text style={styles.boldRed}>
+                          {item.stok} {item.satuan}
+                        </Text>{' '}
+                        (Min {item.stok_minimum}) • {item.lokasi_rak}
+                      </Text>
+                    </View>
+                    <Feather name="chevron-right" size={16} color={UI.colors.muted} />
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </View>
+
+          {/* Aktivitas Stok Terbaru (Scoped berdasarkan Role!) */}
+          <View style={styles.activityHeaderRow}>
+            <Text style={styles.sectionTitle}>
+              {isStaff ? 'Riwayat Transaksi Saya' : 'Aktivitas Stok Terbaru'}
+            </Text>
+            <TouchableOpacity onPress={() => setIsMutasiModalVisible(true)}>
+              <Text style={styles.linkViewAll}>Lihat Semua →</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.activityCard}>
+            {scopedTransaksiList.length === 0 ? (
+              <View style={styles.emptyMutasiBox}>
+                <Feather name="inbox" size={26} color={UI.colors.muted} />
+                <Text style={styles.emptyMutasiText}>Belum ada transaksi untuk akun Anda.</Text>
+              </View>
+            ) : (
+              scopedTransaksiList.map((trx: TransaksiStok, index: number) => {
+                const isMasuk = trx.jenis === 'masuk';
+                const isLast = index === scopedTransaksiList.length - 1;
+
+                return (
+                  <View
+                    key={trx.id}
+                    style={[styles.activityItem, isLast && { borderBottomWidth: 0 }]}
+                  >
+                    <View
+                      style={[
+                        styles.activityCircle,
+                        { backgroundColor: isMasuk ? UI.colors.successBg : UI.colors.dangerBg },
+                      ]}
+                    >
+                      <Feather
+                        name={isMasuk ? 'arrow-down-left' : 'arrow-up-right'}
+                        size={15}
+                        color={isMasuk ? UI.colors.success : UI.colors.dangerDark}
+                      />
+                    </View>
+                    <View style={styles.activityDetails}>
+                      <View style={styles.activityTopLine}>
+                        <Text style={styles.activityItemName} numberOfLines={1}>
+                          {trx.nama_barang}
+                        </Text>
+                        <View
+                          style={[
+                            styles.activityQtyBadge,
+                            { backgroundColor: isMasuk ? UI.colors.successBg : UI.colors.dangerBg },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.activityItemDiff,
+                              { color: isMasuk ? UI.colors.success : UI.colors.dangerDark },
                             ]}
                           >
                             {isMasuk ? `+${trx.jumlah}` : `-${trx.jumlah}`} {trx.satuan}
                           </Text>
                         </View>
-                        <View style={styles.mutasiItemMetaRow}>
-                          <Text style={styles.mutasiItemDate}>{trx.tanggal}</Text>
-                          <Text style={styles.mutasiItemOperator}>
-                            Oleh: {trx.operator} ({trx.role_operator})
+                      </View>
+                      <View style={styles.activityBottomLine}>
+                        <Text style={styles.activityMeta} numberOfLines={1}>
+                          {trx.tanggal} • {trx.operator} ({trx.role_operator})
+                        </Text>
+                        <Text style={styles.activityRemain}>Sisa: {trx.sisa_stok}</Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </View>
+
+          {/* Card Autentikasi & Bearer Token JWT */}
+          <View style={styles.tokenCard}>
+            <View style={styles.tokenCardHeader}>
+              <View style={styles.tokenBadgeRow}>
+                <View style={styles.tokenShieldCircle}>
+                  <Feather name="shield" size={13} color={UI.colors.primary} />
+                </View>
+                <Text style={styles.tokenTitle}>Autentikasi & Token JWT</Text>
+              </View>
+              <View style={styles.activeTokenBadge}>
+                <View style={styles.activeDot} />
+                <Text style={styles.activeTokenText}>Aktif (Bearer)</Text>
+              </View>
+            </View>
+
+            <View style={styles.tokenPreviewBox}>
+              <Text style={styles.tokenLabel}>Bearer Token</Text>
+              <Text style={styles.tokenValue} numberOfLines={showTokenDetails ? undefined : 1}>
+                {session?.token || 'Belum ada token'}
+              </Text>
+            </View>
+
+            <View style={styles.tokenMetaRow}>
+              <Text style={styles.tokenMetaText}>
+                User ID: <Text style={styles.tokenMetaBold}>{currentUser.id}</Text> • Role:{' '}
+                <Text style={styles.tokenMetaBold}>{currentUser.role}</Text>
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowTokenDetails((prev) => !prev)}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <Text style={styles.tokenToggleText}>
+                  {showTokenDetails ? 'Ringkas' : 'Detail'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <SecondaryOutlineButton
+              label="Uji Authorization Header API"
+              onPress={handleTestAuthHeader}
+              iconLeft={<Feather name="check-circle" size={14} color={UI.colors.primary} />}
+              style={styles.testHeaderBtn}
+              textStyle={styles.testHeaderBtnText}
+            />
+          </View>
+
+          <View style={{ height: 16 }} />
+        </ScrollView>
+
+        {/* Sticky Bottom Navigation Bar: Dashboard - Barang - Mutasi - Laporan - Menu */}
+        <View
+          style={[
+            styles.bottomNav,
+            { paddingBottom: Math.max(insets.bottom, 10) },
+          ]}
+        >
+          <TouchableOpacity style={styles.navItem} onPress={() => {}}>
+            <View
+              style={[
+                styles.navIconWrap,
+                !isMutasiModalVisible &&
+                  !isLaporanModalVisible &&
+                  !isMenuModalVisible &&
+                  styles.navIconWrapActive,
+              ]}
+            >
+              <Ionicons
+                name="home"
+                size={19}
+                color={
+                  !isMutasiModalVisible && !isLaporanModalVisible && !isMenuModalVisible
+                    ? '#FFFFFF'
+                    : UI.colors.secondary
+                }
+              />
+            </View>
+            <Text
+              style={[
+                styles.navLabel,
+                !isMutasiModalVisible &&
+                  !isLaporanModalVisible &&
+                  !isMenuModalVisible &&
+                  styles.navLabelActive,
+              ]}
+            >
+              Dashboard
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.navItem}
+            onPress={() => router.push('/barang')}
+          >
+            <View style={styles.navIconWrap}>
+              <Feather name="box" size={19} color={UI.colors.secondary} />
+            </View>
+            <Text style={styles.navLabel}>Barang</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.navItem}
+            onPress={() => setIsMutasiModalVisible(true)}
+          >
+            <View
+              style={[
+                styles.navIconWrap,
+                isMutasiModalVisible && styles.navIconWrapActive,
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="swap-vertical"
+                size={20}
+                color={isMutasiModalVisible ? '#FFFFFF' : UI.colors.secondary}
+              />
+            </View>
+            <Text style={[styles.navLabel, isMutasiModalVisible && styles.navLabelActive]}>
+              Mutasi
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.navItem}
+            onPress={() => setIsLaporanModalVisible(true)}
+          >
+            <View
+              style={[
+                styles.navIconWrap,
+                isLaporanModalVisible && styles.navIconWrapActive,
+              ]}
+            >
+              <Feather
+                name={canViewReports ? 'file-text' : 'lock'}
+                size={18}
+                color={isLaporanModalVisible ? '#FFFFFF' : UI.colors.secondary}
+              />
+            </View>
+            <Text style={[styles.navLabel, isLaporanModalVisible && styles.navLabelActive]}>
+              Laporan
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.navItem}
+            onPress={openMenuSheet}
+          >
+            <View
+              style={[
+                styles.navIconWrap,
+                isMenuModalVisible && styles.navIconWrapActive,
+              ]}
+            >
+              <Feather
+                name="menu"
+                size={19}
+                color={isMenuModalVisible ? '#FFFFFF' : UI.colors.secondary}
+              />
+            </View>
+            <Text style={[styles.navLabel, isMenuModalVisible && styles.navLabelActive]}>
+              Menu
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ============================================================= */}
+        {/* MODAL FORMULIR TRANSAKSI: STOK MASUK & STOK KELUAR           */}
+        {/* ============================================================= */}
+        <Modal
+          visible={stokModalType !== null}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setStokModalType(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.transaksiModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+
+              <View style={styles.transaksiModalHeader}>
+                <TouchableOpacity
+                  style={styles.transaksiCloseBtn}
+                  onPress={() => setStokModalType(null)}
+                >
+                  <Feather name="arrow-left" size={18} color={UI.colors.text} />
+                </TouchableOpacity>
+                <Text style={styles.transaksiModalTitle}>Mutasi Stok</Text>
+                <View style={{ width: 34 }} />
+              </View>
+
+              {!canMutateStock ? (
+                <AccessDeniedView
+                  message="Peran Manajer Operasional hanya memiliki akses monitoring dan persetujuan koreksi stok."
+                  roleName={currentUser.role}
+                  actionLabel="Tutup"
+                  onAction={() => setStokModalType(null)}
+                />
+              ) : (
+                <>
+                  <View style={styles.formTypeSwitch}>
+                    <TouchableOpacity
+                      style={[
+                        styles.formTypePill,
+                        stokModalType === 'masuk' && styles.formTypePillActive,
+                      ]}
+                      onPress={() => {
+                        setStokModalType('masuk');
+                        if (catatanInput === 'Distribusi Unit Lab') {
+                          setCatatanInput('Pengadaan Stok Baru');
+                        }
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.formTypeText,
+                          stokModalType === 'masuk' && styles.formTypeTextActive,
+                        ]}
+                      >
+                        Stok Masuk
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.formTypePill,
+                        stokModalType === 'keluar' && styles.formTypePillActive,
+                      ]}
+                      onPress={() => {
+                        setStokModalType('keluar');
+                        if (catatanInput === 'Pengadaan Stok Baru') {
+                          setCatatanInput('Distribusi Unit Lab');
+                        }
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.formTypeText,
+                          stokModalType === 'keluar' && styles.formTypeTextActive,
+                        ]}
+                      >
+                        Stok Keluar
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 410 }}>
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>Pilih Barang *</Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.barangScrollPills}
+                      >
+                        {barangList.map((item) => {
+                          const isSelected = item.id === selectedBarang?.id;
+                          return (
+                            <TouchableOpacity
+                              key={item.id}
+                              style={[
+                                styles.barangSelectPill,
+                                isSelected && styles.barangSelectPillActive,
+                              ]}
+                              activeOpacity={0.75}
+                              onPress={() => setSelectedBarangId(item.id)}
+                            >
+                              <Text
+                                style={[
+                                  styles.barangSelectName,
+                                  isSelected && styles.barangSelectNameActive,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {item.nama_barang}
+                              </Text>
+                              <Text
+                                style={[
+                                  styles.barangSelectSub,
+                                  isSelected && styles.barangSelectSubActive,
+                                ]}
+                              >
+                                {item.kode_barang} • Stok: {item.stok} {item.satuan}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>
+                        {stokModalType === 'masuk' ? 'Jumlah Masuk *' : 'Jumlah Keluar *'}
+                      </Text>
+                      <View style={styles.stepperContainer}>
+                        <TouchableOpacity
+                          style={styles.stepBtn}
+                          activeOpacity={0.75}
+                          onPress={() => changeJumlah(-1)}
+                        >
+                          <Feather name="minus" size={17} color={UI.colors.text} />
+                        </TouchableOpacity>
+
+                        <TextInput
+                          style={styles.qtyInput}
+                          keyboardType="number-pad"
+                          value={jumlahInput}
+                          onChangeText={setJumlahInput}
+                          selectTextOnFocus
+                        />
+
+                        <TouchableOpacity
+                          style={styles.stepBtn}
+                          activeOpacity={0.75}
+                          onPress={() => changeJumlah(1)}
+                        >
+                          <Feather name="plus" size={17} color={UI.colors.text} />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.quickAddPill}
+                          onPress={() => changeJumlah(5)}
+                        >
+                          <Text style={styles.quickAddText}>+5</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.quickAddPill}
+                          onPress={() => changeJumlah(10)}
+                        >
+                          <Text style={styles.quickAddText}>+10</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>Tanggal</Text>
+                      <View style={styles.dateReadonlyBox}>
+                        <Text style={styles.dateReadonlyText}>{todayFormatted}</Text>
+                        <Feather name="calendar" size={16} color={UI.colors.secondary} />
+                      </View>
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>Keterangan</Text>
+                      <TextInput
+                        style={styles.catatanInput}
+                        placeholder="Masukkan keterangan (opsional)"
+                        placeholderTextColor={UI.colors.muted}
+                        value={catatanInput}
+                        onChangeText={setCatatanInput}
+                      />
+                    </View>
+
+                    {selectedBarang ? (
+                      <View
+                        style={[
+                          styles.calcPreviewCard,
+                          isStokKurang && styles.calcPreviewCardError,
+                        ]}
+                      >
+                        <Text style={styles.calcPreviewTitle}>Ringkasan Perubahan Stok</Text>
+                        <View style={styles.calcRow}>
+                          <Text style={styles.calcLabel}>Barang</Text>
+                          <Text style={styles.calcValue} numberOfLines={1}>
+                            {selectedBarang.nama_barang}
                           </Text>
                         </View>
-                        <Text style={styles.mutasiItemSisa}>
-                          Sisa stok gudang: <Text style={styles.boldDark}>{trx.sisa_stok} {trx.satuan}</Text>
-                        </Text>
+                        <View style={styles.calcRow}>
+                          <Text style={styles.calcLabel}>Stok Saat Ini</Text>
+                          <Text style={styles.calcValue}>
+                            {selectedBarang.stok} {selectedBarang.satuan}
+                          </Text>
+                        </View>
+                        <View style={styles.calcRow}>
+                          <Text style={styles.calcLabel}>
+                            Perubahan ({stokModalType === 'masuk' ? 'Masuk' : 'Keluar'})
+                          </Text>
+                          <Text
+                            style={[
+                              styles.calcValue,
+                              {
+                                color:
+                                  stokModalType === 'masuk'
+                                    ? UI.colors.success
+                                    : UI.colors.dangerDark,
+                                fontWeight: '800',
+                              },
+                            ]}
+                          >
+                            {stokModalType === 'masuk' ? `+${parsedJumlah}` : `-${parsedJumlah}`}{' '}
+                            {selectedBarang.satuan}
+                          </Text>
+                        </View>
+                        <View style={[styles.calcRow, styles.calcRowTotal]}>
+                          <Text style={styles.calcTotalLabel}>Estimasi Stok Akhir</Text>
+                          <Text
+                            style={[
+                              styles.calcTotalValue,
+                              isStokKurang && { color: UI.colors.dangerDark },
+                            ]}
+                          >
+                            {estimasiStokAkhir} {selectedBarang.satuan}
+                          </Text>
+                        </View>
+
+                        {isStokKurang ? (
+                          <View style={styles.errorWarnBox}>
+                            <Feather name="alert-circle" size={14} color={UI.colors.dangerDark} />
+                            <Text style={styles.errorWarnText}>
+                              Jumlah melebihi stok yang tersedia saat ini.
+                            </Text>
+                          </View>
+                        ) : null}
                       </View>
-                    </View>
-                  );
-                })
+                    ) : null}
+                  </ScrollView>
+
+                  <View style={styles.modalActionButtons}>
+                    <SecondaryOutlineButton
+                      label="Batal"
+                      onPress={() => setStokModalType(null)}
+                      style={{ flex: 1 }}
+                    />
+                    <PrimaryGradientButton
+                      label="Simpan"
+                      disabled={Boolean(isStokKurang)}
+                      onPress={handleSimpanTransaksi}
+                      iconLeft={<Feather name="check" size={16} color="#FFFFFF" />}
+                      style={{ flex: 2 }}
+                    />
+                  </View>
+                </>
               )}
-            </ScrollView>
-
-            {/* Bottom Actions */}
-            <View style={styles.sheetActionRow}>
-              <TouchableOpacity
-                style={[styles.sheetSecondaryBtn, { flex: 1 }]}
-                onPress={() => {
-                  setIsMutasiModalVisible(false);
-                  openStokModal('masuk');
-                }}
-              >
-                <Feather name="plus-circle" size={15} color="#16a34a" />
-                <Text style={[styles.sheetSecondaryBtnText, { color: '#16a34a' }]}>
-                  + Stok Masuk
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.sheetSecondaryBtn, { flex: 1 }]}
-                onPress={() => {
-                  setIsMutasiModalVisible(false);
-                  openStokModal('keluar');
-                }}
-              >
-                <Feather name="minus-circle" size={15} color="#dc2626" />
-                <Text style={[styles.sheetSecondaryBtnText, { color: '#dc2626' }]}>
-                  - Stok Keluar
-                </Text>
-              </TouchableOpacity>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
 
-      {/* ============================================================= */}
-      {/* 2. MODAL LAPORAN & VALUASI STOK                               */}
-      {/* ============================================================= */}
-      <Modal
-        visible={isLaporanModalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setIsLaporanModalVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.sheetModalContent}>
-            {/* Modal Header */}
-            <View style={styles.sheetModalHeader}>
-              <View style={styles.sheetHeaderLeft}>
-                <View style={[styles.sheetIconCircle, { backgroundColor: '#f0fdf4' }]}>
-                  <Feather name="bar-chart-2" size={22} color="#16a34a" />
-                </View>
-                <View>
-                  <Text style={styles.sheetModalTitle}>Laporan & Valuasi Stok</Text>
-                  <Text style={styles.sheetModalSubtitle}>
-                    Analisis nilai aset & kesehatan inventaris
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.sheetCloseBtn}
-                onPress={() => setIsLaporanModalVisible(false)}
-              >
-                <Feather name="x" size={18} color="#64748b" />
-              </TouchableOpacity>
-            </View>
+        {/* ============================================================= */}
+        {/* MODAL KOREKSI STOK (KHUSUS ADMIN GUDANG -> APPROVAL MANAJER)  */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isKoreksiModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsKoreksiModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
 
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
-              {/* Card 1: Valuasi Finansial */}
-              <View style={styles.laporanFinanceCard}>
-                <Text style={styles.laporanCardTitle}>Valuasi Finansial Stok</Text>
-                
-                <View style={styles.financeItemRow}>
+              <View style={styles.sheetModalHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                    <Feather name="sliders" size={19} color={UI.colors.primary} />
+                  </View>
                   <View>
-                    <Text style={styles.financeLabel}>Total Aset Pengadaan (Beli):</Text>
-                    <Text style={styles.financeBeliValue}>{formatRupiah(totalAsetBeli)}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={styles.financeLabel}>Potensi Penjualan:</Text>
-                    <Text style={styles.financeJualValue}>{formatRupiah(totalNilaiJual)}</Text>
+                    <Text style={styles.sheetModalTitle}>Pengajuan Koreksi Stok</Text>
+                    <Text style={styles.sheetModalSubtitle}>
+                      Menunggu persetujuan Manajer Operasional
+                    </Text>
                   </View>
                 </View>
+                <TouchableOpacity
+                  style={styles.sheetCloseBtn}
+                  onPress={() => setIsKoreksiModalVisible(false)}
+                >
+                  <Feather name="x" size={18} color={UI.colors.secondary} />
+                </TouchableOpacity>
+              </View>
 
-                <View style={styles.financeMarginBox}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={styles.financeMarginLabel}>Potensi Margin Keuntungan:</Text>
-                    <View style={styles.marginPercentBadge}>
-                      <Text style={styles.marginPercentText}>+{persentaseMargin}%</Text>
+              {!canSubmitKoreksi ? (
+                <AccessDeniedView
+                  message="Hanya Admin Gudang yang berwenang mengajukan koreksi stok."
+                  roleName={currentUser.role}
+                  actionLabel="Tutup"
+                  onAction={() => setIsKoreksiModalVisible(false)}
+                />
+              ) : (
+                <>
+                  <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 380, marginTop: 12 }}>
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>Pilih Barang *</Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.barangScrollPills}
+                      >
+                        {barangList.map((item) => {
+                          const isSelected = item.id === koreksiBarangId;
+                          return (
+                            <TouchableOpacity
+                              key={item.id}
+                              style={[
+                                styles.barangSelectPill,
+                                isSelected && styles.barangSelectPillActive,
+                              ]}
+                              onPress={() => {
+                                setKoreksiBarangId(item.id);
+                                setKoreksiStokFisik(String(item.stok));
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.barangSelectName,
+                                  isSelected && styles.barangSelectNameActive,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {item.nama_barang}
+                              </Text>
+                              <Text style={styles.barangSelectSub}>
+                                Sistem: {item.stok} {item.satuan}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
                     </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>Stok Fisik Hasil Opname *</Text>
+                      <TextInput
+                        style={styles.catatanInput}
+                        keyboardType="number-pad"
+                        value={koreksiStokFisik}
+                        onChangeText={setKoreksiStokFisik}
+                        placeholder="Jumlah fisik aktual"
+                        placeholderTextColor={UI.colors.muted}
+                      />
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionLabel}>Alasan Koreksi *</Text>
+                      <TextInput
+                        style={styles.catatanInput}
+                        value={koreksiAlasan}
+                        onChangeText={setKoreksiAlasan}
+                        placeholder="Contoh: Selisih opname bulanan rak A-01"
+                        placeholderTextColor={UI.colors.muted}
+                      />
+                    </View>
+                  </ScrollView>
+
+                  <View style={styles.sheetActionRow}>
+                    <SecondaryOutlineButton
+                      label="Batal"
+                      onPress={() => setIsKoreksiModalVisible(false)}
+                      style={{ flex: 1 }}
+                    />
+                    <PrimaryGradientButton
+                      label="Ajukan Koreksi"
+                      onPress={handleSubmitKoreksi}
+                      style={{ flex: 1.6 }}
+                    />
                   </View>
-                  <Text style={styles.financeMarginValue}>{formatRupiah(potensiMargin)}</Text>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* ============================================================= */}
+        {/* MODAL PERSETUJUAN KOREKSI STOK (KHUSUS MANAJER OPERASIONAL)   */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isApprovalModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsApprovalModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+
+              <View style={styles.sheetModalHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                    <Feather name="check-square" size={19} color={UI.colors.primary} />
+                  </View>
+                  <View>
+                    <Text style={styles.sheetModalTitle}>Persetujuan Koreksi Stok</Text>
+                    <Text style={styles.sheetModalSubtitle}>
+                      Otorisasi Manajer Operasional
+                    </Text>
+                  </View>
                 </View>
+                <TouchableOpacity
+                  style={styles.sheetCloseBtn}
+                  onPress={() => setIsApprovalModalVisible(false)}
+                >
+                  <Feather name="x" size={18} color={UI.colors.secondary} />
+                </TouchableOpacity>
               </View>
 
-              {/* Card 2: Status Kesehatan Stok */}
-              <View style={styles.laporanHealthCard}>
-                <Text style={styles.laporanCardTitle}>Kesehatan Inventaris</Text>
-                <View style={styles.healthStatsGrid}>
-                  <View style={[styles.healthStatItem, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}>
-                    <Text style={[styles.healthStatNumber, { color: '#16a34a' }]}>{summary.statusAman}</Text>
-                    <Text style={styles.healthStatLabel}>Barang Aman</Text>
-                  </View>
-                  <View style={[styles.healthStatItem, { backgroundColor: '#fef3c7', borderColor: '#fde68a' }]}>
-                    <Text style={[styles.healthStatNumber, { color: '#d97706' }]}>{summary.statusMenipis}</Text>
-                    <Text style={styles.healthStatLabel}>Stok Menipis</Text>
-                  </View>
-                  <View style={[styles.healthStatItem, { backgroundColor: '#fee2e2', borderColor: '#fca5a5' }]}>
-                    <Text style={[styles.healthStatNumber, { color: '#dc2626' }]}>{summary.statusHabis}</Text>
-                    <Text style={styles.healthStatLabel}>Stok Habis</Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Card 3: Breakdown per Kategori */}
-              <View style={styles.laporanCategoryCard}>
-                <Text style={styles.laporanCardTitle}>Distribusi Aset per Kategori</Text>
-                {kategoriSummary.map((kat) => (
-                  <View key={kat.kategori} style={styles.kategoriRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.kategoriName}>{kat.kategori}</Text>
-                      <Text style={styles.kategoriDetail}>
-                        {kat.count} item • {kat.totalStok} unit fisik
+              {!canApproveKoreksi ? (
+                <AccessDeniedView
+                  message="Persetujuan koreksi stok hanya dapat dilakukan oleh Manajer Operasional."
+                  roleName={currentUser.role}
+                  actionLabel="Tutup"
+                  onAction={() => setIsApprovalModalVisible(false)}
+                />
+              ) : (
+                <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420, marginTop: 12 }}>
+                  {koreksiList.map((req) => (
+                    <View key={req.id} style={styles.approvalItemCard}>
+                      <View style={styles.approvalTopRow}>
+                        <Text style={styles.approvalItemName} numberOfLines={1}>
+                          {req.nama_barang}
+                        </Text>
+                        <View
+                          style={[
+                            styles.pendingPill,
+                            req.status === 'approved' && { backgroundColor: UI.colors.successBg, borderColor: UI.colors.successBorder },
+                            req.status === 'rejected' && { backgroundColor: UI.colors.dangerBg, borderColor: UI.colors.dangerBorder },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.pendingPillText,
+                              req.status === 'approved' && { color: UI.colors.success },
+                              req.status === 'rejected' && { color: UI.colors.dangerDark },
+                            ]}
+                          >
+                            {req.status === 'pending'
+                              ? 'Menunggu'
+                              : req.status === 'approved'
+                              ? 'Disetujui'
+                              : 'Ditolak'}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.approvalMeta}>
+                        Sistem: {req.stok_sistem} → Fisik: {req.stok_fisik} ({req.selisih >= 0 ? `+${req.selisih}` : req.selisih} {req.satuan})
                       </Text>
+                      <Text style={styles.approvalReason}>
+                        Alasan: {req.alasan} • {req.diajukan_oleh} ({req.tanggal_pengajuan})
+                      </Text>
+                      {req.status === 'pending' ? (
+                        <View style={styles.approvalActionsRow}>
+                          <SecondaryOutlineButton
+                            label="Tolak"
+                            onPress={() => handleReviewKoreksi(req.id, 'rejected')}
+                            style={{ flex: 1, height: 38 }}
+                            textStyle={{ fontSize: 12.5 }}
+                          />
+                          <PrimaryGradientButton
+                            label="Setujui"
+                            onPress={() => handleReviewKoreksi(req.id, 'approved')}
+                            style={{ flex: 1.4, height: 38 }}
+                            textStyle={{ fontSize: 12.5 }}
+                          />
+                        </View>
+                      ) : (
+                        <Text style={styles.approvalDecisionMeta}>
+                          Diputuskan oleh {req.diputuskan_oleh} • {req.tanggal_keputusan}
+                        </Text>
+                      )}
                     </View>
-                    <Text style={styles.kategoriAsetValue}>{formatRupiah(kat.totalNilai)}</Text>
-                  </View>
-                ))}
-              </View>
-            </ScrollView>
-
-            {/* Export Report Button */}
-            <View style={styles.sheetActionRow}>
-              <TouchableOpacity
-                style={styles.exportReportBtn}
-                activeOpacity={0.8}
-                onPress={() => {
-                  Alert.alert(
-                    'Ekspor Laporan Berhasil',
-                    `Ringkasan Inventaris EduStock:\n\n` +
-                    `• Total Barang: ${summary.totalBarang} SKU\n` +
-                    `• Total Unit Fisik: ${summary.totalStok} unit\n` +
-                    `• Total Valuasi Beli: ${formatRupiah(totalAsetBeli)}\n` +
-                    `• Potensi Penjualan: ${formatRupiah(totalNilaiJual)}\n` +
-                    `• Estimasi Margin: ${formatRupiah(potensiMargin)} (+${persentaseMargin}%)\n\n` +
-                    `Laporan siap dicetak atau dikirim ke manajemen logistik.`
-                  );
-                }}
-              >
-                <Feather name="download" size={16} color="#ffffff" />
-                <Text style={styles.exportReportBtnText}>Unduh Laporan Inventaris</Text>
-              </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
 
-      {/* ============================================================= */}
-      {/* 3. MODAL MENU & PUSAT KONTROL PROFIL                          */}
-      {/* ============================================================= */}
-      <Modal
-        visible={isMenuModalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setIsMenuModalVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.sheetModalContent}>
-            {/* Modal Header */}
-            <View style={styles.sheetModalHeader}>
-              <View style={styles.sheetHeaderLeft}>
-                <View style={[styles.sheetIconCircle, { backgroundColor: '#f5f3ff' }]}>
-                  <Feather name="grid" size={22} color="#7c3aed" />
-                </View>
-                <View>
-                  <Text style={styles.sheetModalTitle}>Pusat Kontrol & Profil</Text>
-                  <Text style={styles.sheetModalSubtitle}>
-                    Manajemen akun, sesi JWT, dan peran demo
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.sheetCloseBtn}
-                onPress={() => setIsMenuModalVisible(false)}
-              >
-                <Feather name="x" size={18} color="#64748b" />
-              </TouchableOpacity>
-            </View>
+        {/* ============================================================= */}
+        {/* MODAL KELOLA PENGGUNA (KHUSUS ADMIN GUDANG)                   */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isUsersModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsUsersModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
 
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
-              {/* User Identity Card */}
-              <View style={styles.menuUserCard}>
-                <View style={styles.menuAvatarCircle}>
-                  <Text style={styles.menuAvatarText}>
-                    {currentUser.name.charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={styles.menuUserInfo}>
-                  <Text style={styles.menuUserName}>{currentUser.name}</Text>
-                  <Text style={styles.menuUserEmail}>{currentUser.email}</Text>
-                  <View style={styles.menuRoleBadgeRow}>
-                    <View style={styles.menuRoleBadge}>
-                      <Text style={styles.menuRoleBadgeText}>{currentUser.role}</Text>
-                    </View>
-                    <View style={styles.menuVerifiedBadge}>
-                      <Feather name="check" size={11} color="#16a34a" />
-                      <Text style={styles.menuVerifiedText}>Terverifikasi</Text>
-                    </View>
+              <View style={styles.sheetModalHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                    <Feather name="users" size={19} color={UI.colors.primary} />
+                  </View>
+                  <View>
+                    <Text style={styles.sheetModalTitle}>Kelola Pengguna</Text>
+                    <Text style={styles.sheetModalSubtitle}>Administrasi akun & peran</Text>
                   </View>
                 </View>
+                <TouchableOpacity
+                  style={styles.sheetCloseBtn}
+                  onPress={() => setIsUsersModalVisible(false)}
+                >
+                  <Feather name="x" size={18} color={UI.colors.secondary} />
+                </TouchableOpacity>
               </View>
 
-              {/* Fast Role Switcher */}
-              <View style={styles.menuSectionBox}>
-                <Text style={styles.menuSectionTitle}>SIMULASI GANTI PERAN PENGGUNA (ROLE DEMO):</Text>
-                <View style={styles.roleSwitcherContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.roleSwitchCard,
-                      currentUser.username === 'admin' && styles.roleSwitchCardActive,
-                    ]}
-                    activeOpacity={0.7}
-                    onPress={() => handleQuickSwitchRole('admin')}
-                  >
-                    <View style={styles.roleSwitchLeft}>
-                      <Feather
-                        name="shield"
-                        size={16}
-                        color={currentUser.username === 'admin' ? '#2563eb' : '#64748b'}
-                      />
-                      <View style={{ marginLeft: 8 }}>
-                        <Text style={[styles.roleSwitchName, currentUser.username === 'admin' && { color: '#2563eb', fontWeight: '800' }]}>
-                          Admin Gudang
+              {!canManageUsers ? (
+                <AccessDeniedView
+                  message="Hanya Admin Gudang yang berwenang mengelola pengguna."
+                  roleName={currentUser.role}
+                  actionLabel="Tutup"
+                  onAction={() => setIsUsersModalVisible(false)}
+                />
+              ) : (
+                <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 450, marginTop: 12 }}>
+                  {managedUsers.map((u) => (
+                    <View key={u.id} style={styles.userRowCard}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.userRowName}>{u.name}</Text>
+                        <Text style={styles.userRowMeta}>
+                          @{u.username} • {u.role}
                         </Text>
-                        <Text style={styles.roleSwitchUser}>Budi Santoso</Text>
                       </View>
-                    </View>
-                    {currentUser.username === 'admin' ? (
-                      <View style={styles.activeCheckPill}>
-                        <Feather name="check" size={12} color="#ffffff" />
-                        <Text style={styles.activeCheckText}>Aktif</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.switchRoleHint}>Pilih →</Text>
-                    )}
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.roleSwitchCard,
-                      currentUser.username === 'staff' && styles.roleSwitchCardActive,
-                    ]}
-                    activeOpacity={0.7}
-                    onPress={() => handleQuickSwitchRole('staff')}
-                  >
-                    <View style={styles.roleSwitchLeft}>
-                      <Feather
-                        name="user-check"
-                        size={16}
-                        color={currentUser.username === 'staff' ? '#2563eb' : '#64748b'}
-                      />
-                      <View style={{ marginLeft: 8 }}>
-                        <Text style={[styles.roleSwitchName, currentUser.username === 'staff' && { color: '#2563eb', fontWeight: '800' }]}>
-                          Staff Logistik
+                      <TouchableOpacity
+                        style={[
+                          styles.userStatusPill,
+                          u.aktif === false && styles.userStatusPillOff,
+                        ]}
+                        onPress={() => handleToggleUserStatus(u.id)}
+                      >
+                        <Text
+                          style={[
+                            styles.userStatusText,
+                            u.aktif === false && { color: UI.colors.dangerDark },
+                          ]}
+                        >
+                          {u.aktif !== false ? 'Aktif' : 'Nonaktif'}
                         </Text>
-                        <Text style={styles.roleSwitchUser}>Siti Rahma</Text>
-                      </View>
+                      </TouchableOpacity>
                     </View>
-                    {currentUser.username === 'staff' ? (
-                      <View style={styles.activeCheckPill}>
-                        <Feather name="check" size={12} color="#ffffff" />
-                        <Text style={styles.activeCheckText}>Aktif</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.switchRoleHint}>Pilih →</Text>
-                    )}
-                  </TouchableOpacity>
+                  ))}
 
-                  <TouchableOpacity
-                    style={[
-                      styles.roleSwitchCard,
-                      currentUser.username === 'manager' && styles.roleSwitchCardActive,
-                    ]}
-                    activeOpacity={0.7}
-                    onPress={() => handleQuickSwitchRole('manager')}
-                  >
-                    <View style={styles.roleSwitchLeft}>
-                      <Feather
-                        name="briefcase"
-                        size={16}
-                        color={currentUser.username === 'manager' ? '#2563eb' : '#64748b'}
-                      />
-                      <View style={{ marginLeft: 8 }}>
-                        <Text style={[styles.roleSwitchName, currentUser.username === 'manager' && { color: '#2563eb', fontWeight: '800' }]}>
-                          Manager Operasional
-                        </Text>
-                        <Text style={styles.roleSwitchUser}>Ahmad Fauzi</Text>
-                      </View>
+                  <View style={styles.addUserBox}>
+                    <Text style={styles.formSectionLabel}>Tambah Pengguna Baru</Text>
+                    <TextInput
+                      style={[styles.catatanInput, { marginBottom: 8 }]}
+                      placeholder="Nama lengkap"
+                      placeholderTextColor={UI.colors.muted}
+                      value={newUserName}
+                      onChangeText={setNewUserName}
+                    />
+                    <TextInput
+                      style={[styles.catatanInput, { marginBottom: 8 }]}
+                      placeholder="Username"
+                      placeholderTextColor={UI.colors.muted}
+                      autoCapitalize="none"
+                      value={newUserUsername}
+                      onChangeText={setNewUserUsername}
+                    />
+                    <TextInput
+                      style={[styles.catatanInput, { marginBottom: 8 }]}
+                      placeholder="Email (@edustock.com)"
+                      placeholderTextColor={UI.colors.muted}
+                      autoCapitalize="none"
+                      value={newUserEmail}
+                      onChangeText={setNewUserEmail}
+                    />
+                    <View style={styles.radiusRow}>
+                      {(['Admin Gudang', 'Staff Inventory', 'Pemilik Toko / Manajer'] as const).map(
+                        (r) => (
+                          <TouchableOpacity
+                            key={r}
+                            style={[
+                              styles.roleSelectChip,
+                              newUserRole === r && styles.roleSelectChipActive,
+                            ]}
+                            onPress={() => setNewUserRole(r)}
+                          >
+                            <Text
+                              style={[
+                                styles.roleSelectChipText,
+                                newUserRole === r && { color: '#FFFFFF' },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {r === 'Pemilik Toko / Manajer' ? 'Manajer' : r}
+                            </Text>
+                          </TouchableOpacity>
+                        )
+                      )}
                     </View>
-                    {currentUser.username === 'manager' ? (
-                      <View style={styles.activeCheckPill}>
-                        <Feather name="check" size={12} color="#ffffff" />
-                        <Text style={styles.activeCheckText}>Aktif</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.switchRoleHint}>Pilih →</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Navigasi Cepat */}
-              <View style={styles.menuSectionBox}>
-                <Text style={styles.menuSectionTitle}>PINTASAN FITUR:</Text>
-                <View style={styles.menuShortcutsRow}>
-                  <TouchableOpacity
-                    style={styles.menuShortcutBtn}
-                    onPress={() => {
-                      setIsMenuModalVisible(false);
-                      router.push('/barang');
-                    }}
-                  >
-                    <Feather name="box" size={18} color="#2563eb" />
-                    <Text style={styles.menuShortcutText}>Katalog Barang</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.menuShortcutBtn}
-                    onPress={() => {
-                      setIsMenuModalVisible(false);
-                      router.push('/scanner');
-                    }}
-                  >
-                    <Feather name="camera" size={18} color="#7c3aed" />
-                    <Text style={styles.menuShortcutText}>Scan Barcode</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.menuShortcutBtn}
-                    onPress={handleTestAuthHeader}
-                  >
-                    <Feather name="shield" size={18} color="#0891b2" />
-                    <Text style={styles.menuShortcutText}>Uji Bearer</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.menuShortcutBtn}
-                    onPress={() => {
-                      setIsMenuModalVisible(false);
-                      router.push('/lokasi' as any);
-                    }}
-                  >
-                    <Feather name="map-pin" size={18} color="#7c3aed" />
-                    <Text style={styles.menuShortcutText}>Lokasi Gudang</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </ScrollView>
-
-            {/* Logout Action Button */}
-            <View style={styles.sheetActionRow}>
-              <TouchableOpacity
-                style={styles.menuLogoutBtn}
-                activeOpacity={0.8}
-                onPress={() => {
-                  setIsMenuModalVisible(false);
-                  handleLogout();
-                }}
-              >
-                <Feather name="log-out" size={16} color="#ffffff" />
-                <Text style={styles.menuLogoutBtnText}>Keluar dari Akun (Logout)</Text>
-              </TouchableOpacity>
+                    <PrimaryGradientButton
+                      label="Tambah Pengguna"
+                      onPress={handleAddUser}
+                      style={{ marginTop: 10 }}
+                    />
+                  </View>
+                </ScrollView>
+              )}
             </View>
           </View>
-        </View>
-      </Modal>
-    </SafeAreaView>
+        </Modal>
+
+        {/* ============================================================= */}
+        {/* MODAL PENGATURAN GUDANG (KHUSUS ADMIN GUDANG)                 */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isWarehouseModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsWarehouseModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+              <View style={styles.sheetModalHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                    <Feather name="settings" size={19} color={UI.colors.primary} />
+                  </View>
+                  <View>
+                    <Text style={styles.sheetModalTitle}>Pengaturan Gudang</Text>
+                    <Text style={styles.sheetModalSubtitle}>Konfigurasi lokasi & geofence</Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.sheetCloseBtn}
+                  onPress={() => setIsWarehouseModalVisible(false)}
+                >
+                  <Feather name="x" size={18} color={UI.colors.secondary} />
+                </TouchableOpacity>
+              </View>
+
+              {!canConfigWarehouse ? (
+                <AccessDeniedView
+                  message="Hanya Admin Gudang yang berwenang mengubah konfigurasi gudang."
+                  roleName={currentUser.role}
+                  actionLabel="Tutup"
+                  onAction={() => setIsWarehouseModalVisible(false)}
+                />
+              ) : (
+                <>
+                  <View style={{ marginTop: 12, gap: 10 }}>
+                    <View>
+                      <Text style={styles.formSectionLabel}>Nama Gudang</Text>
+                      <TextInput
+                        style={styles.catatanInput}
+                        value={whNameDraft}
+                        onChangeText={setWhNameDraft}
+                      />
+                    </View>
+                    <View>
+                      <Text style={styles.formSectionLabel}>Alamat Gudang</Text>
+                      <TextInput
+                        style={styles.catatanInput}
+                        value={whAddressDraft}
+                        onChangeText={setWhAddressDraft}
+                      />
+                    </View>
+                    <View>
+                      <Text style={styles.formSectionLabel}>Radius Geofence Default</Text>
+                      <View style={styles.radiusRow}>
+                        {[50, 100, 150].map((rad) => (
+                          <TouchableOpacity
+                            key={rad}
+                            style={[
+                              styles.roleSelectChip,
+                              whRadiusDraft === rad && styles.roleSelectChipActive,
+                            ]}
+                            onPress={() => setWhRadiusDraft(rad)}
+                          >
+                            <Text
+                              style={[
+                                styles.roleSelectChipText,
+                                whRadiusDraft === rad && { color: '#FFFFFF' },
+                              ]}
+                            >
+                              {rad} Meter
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.sheetActionRow}>
+                    <SecondaryOutlineButton
+                      label="Batal"
+                      onPress={() => setIsWarehouseModalVisible(false)}
+                      style={{ flex: 1 }}
+                    />
+                    <PrimaryGradientButton
+                      label="Simpan Pengaturan"
+                      onPress={handleSaveWarehouseConfig}
+                      style={{ flex: 1.6 }}
+                    />
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* ============================================================= */}
+        {/* 1. MODAL RIWAYAT MUTASI STOK (SCOPED BY ROLE)                 */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isMutasiModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsMutasiModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+
+              <View style={styles.sheetModalHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                    <MaterialCommunityIcons name="swap-vertical" size={20} color={UI.colors.primary} />
+                  </View>
+                  <View>
+                    <Text style={styles.sheetModalTitle}>
+                      {isStaff ? 'Riwayat Transaksi Saya' : 'Riwayat Mutasi Stok'}
+                    </Text>
+                    <Text style={styles.sheetModalSubtitle}>
+                      {scopedTransaksiList.length} log pergerakan stok {isStaff ? '(milik Anda)' : ''}
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.sheetCloseBtn}
+                  onPress={() => setIsMutasiModalVisible(false)}
+                >
+                  <Feather name="x" size={18} color={UI.colors.secondary} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.mutasiFilterRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.mutasiFilterPill,
+                    mutasiFilter === 'semua' && styles.mutasiFilterPillActive,
+                  ]}
+                  onPress={() => setMutasiFilter('semua')}
+                >
+                  <Text
+                    style={[
+                      styles.mutasiFilterText,
+                      mutasiFilter === 'semua' && styles.mutasiFilterTextActive,
+                    ]}
+                  >
+                    Semua ({scopedTransaksiList.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.mutasiFilterPill,
+                    mutasiFilter === 'masuk' && styles.mutasiFilterPillActive,
+                  ]}
+                  onPress={() => setMutasiFilter('masuk')}
+                >
+                  <View
+                    style={[
+                      styles.filterDot,
+                      { backgroundColor: mutasiFilter === 'masuk' ? '#FFFFFF' : UI.colors.success },
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.mutasiFilterText,
+                      mutasiFilter === 'masuk' && styles.mutasiFilterTextActive,
+                    ]}
+                  >
+                    Masuk ({countMutasiMasuk})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.mutasiFilterPill,
+                    mutasiFilter === 'keluar' && styles.mutasiFilterPillActive,
+                  ]}
+                  onPress={() => setMutasiFilter('keluar')}
+                >
+                  <View
+                    style={[
+                      styles.filterDot,
+                      { backgroundColor: mutasiFilter === 'keluar' ? '#FFFFFF' : UI.colors.danger },
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.mutasiFilterText,
+                      mutasiFilter === 'keluar' && styles.mutasiFilterTextActive,
+                    ]}
+                  >
+                    Keluar ({countMutasiKeluar})
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                style={{ maxHeight: 380, marginVertical: 6 }}
+              >
+                {filteredMutasiList.length === 0 ? (
+                  <View style={styles.emptyMutasiBox}>
+                    <Feather name="inbox" size={32} color={UI.colors.muted} />
+                    <Text style={styles.emptyMutasiText}>
+                      Belum ada riwayat mutasi untuk filter ini.
+                    </Text>
+                  </View>
+                ) : (
+                  filteredMutasiList.map((trx: TransaksiStok, idx: number) => {
+                    const isMasuk = trx.jenis === 'masuk';
+                    const isLast = idx === filteredMutasiList.length - 1;
+                    return (
+                      <View
+                        key={trx.id}
+                        style={[styles.mutasiItemCard, isLast && { borderBottomWidth: 0 }]}
+                      >
+                        <View
+                          style={[
+                            styles.mutasiTypeBadge,
+                            { backgroundColor: isMasuk ? UI.colors.successBg : UI.colors.dangerBg },
+                          ]}
+                        >
+                          <Feather
+                            name={isMasuk ? 'arrow-down-left' : 'arrow-up-right'}
+                            size={17}
+                            color={isMasuk ? UI.colors.success : UI.colors.dangerDark}
+                          />
+                        </View>
+                        <View style={styles.mutasiItemInfo}>
+                          <View style={styles.mutasiItemHeaderRow}>
+                            <Text style={styles.mutasiItemName} numberOfLines={1}>
+                              {trx.nama_barang}
+                            </Text>
+                            <View
+                              style={[
+                                styles.activityQtyBadge,
+                                { backgroundColor: isMasuk ? UI.colors.successBg : UI.colors.dangerBg },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.mutasiItemQty,
+                                  { color: isMasuk ? UI.colors.success : UI.colors.dangerDark },
+                                ]}
+                              >
+                                {isMasuk ? `+${trx.jumlah}` : `-${trx.jumlah}`} {trx.satuan}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={styles.mutasiItemMetaRow}>
+                            <Text style={styles.mutasiItemDate}>{trx.tanggal}</Text>
+                            <Text style={styles.mutasiItemOperator}>
+                              {trx.operator} ({trx.role_operator})
+                            </Text>
+                          </View>
+                          <Text style={styles.mutasiItemSisa}>
+                            Sisa stok: <Text style={styles.boldDark}>{trx.sisa_stok} {trx.satuan}</Text>
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+              </ScrollView>
+
+              {canMutateStock ? (
+                <View style={styles.sheetActionRow}>
+                  <SecondaryOutlineButton
+                    label="Stok Keluar"
+                    iconLeft={<Feather name="minus-circle" size={15} color={UI.colors.primary} />}
+                    onPress={() => {
+                      setIsMutasiModalVisible(false);
+                      openStokModal('keluar');
+                    }}
+                    style={{ flex: 1 }}
+                  />
+                  <PrimaryGradientButton
+                    label="Stok Masuk"
+                    iconLeft={<Feather name="plus-circle" size={15} color="#FFFFFF" />}
+                    onPress={() => {
+                      setIsMutasiModalVisible(false);
+                      openStokModal('masuk');
+                    }}
+                    style={{ flex: 1 }}
+                  />
+                </View>
+              ) : (
+                <View style={styles.sheetActionRow}>
+                  <SecondaryOutlineButton
+                    label="Mode Monitoring (Tutup)"
+                    onPress={() => setIsMutasiModalVisible(false)}
+                    style={{ flex: 1 }}
+                  />
+                </View>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* ============================================================= */}
+        {/* 2. MODAL LAPORAN & VALUASI STOK (GUARDED RBAC)                */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isLaporanModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsLaporanModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+
+              <View style={styles.sheetModalHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                    <Feather name="bar-chart-2" size={20} color={UI.colors.primary} />
+                  </View>
+                  <View>
+                    <Text style={styles.sheetModalTitle}>Laporan & Valuasi</Text>
+                    <Text style={styles.sheetModalSubtitle}>
+                      Ringkasan aset & kesehatan inventaris
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.sheetCloseBtn}
+                  onPress={() => setIsLaporanModalVisible(false)}
+                >
+                  <Feather name="x" size={18} color={UI.colors.secondary} />
+                </TouchableOpacity>
+              </View>
+
+              {!canViewReports ? (
+                <AccessDeniedView
+                  title="Akses Laporan Dibatasi (403)"
+                  message="Laporan valuasi finansial dan ekspor data inventaris hanya tersedia untuk Admin Gudang dan Manajer Operasional."
+                  roleName={currentUser.role}
+                  actionLabel="Tutup"
+                  onAction={() => setIsLaporanModalVisible(false)}
+                />
+              ) : (
+                <>
+                  <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 430 }}>
+                    <View style={styles.laporanFinanceCard}>
+                      <Text style={styles.laporanCardTitle}>Valuasi Finansial Stok</Text>
+
+                      <View style={styles.financeItemRow}>
+                        <View style={styles.financeMetricBox}>
+                          <Text style={styles.financeLabel}>Total Aset Beli</Text>
+                          <Text style={styles.financeBeliValue}>{formatRupiah(totalAsetBeli)}</Text>
+                        </View>
+                        <View style={styles.financeMetricDivider} />
+                        <View style={styles.financeMetricBox}>
+                          <Text style={styles.financeLabel}>Potensi Penjualan</Text>
+                          <Text style={styles.financeJualValue}>{formatRupiah(totalNilaiJual)}</Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.financeMarginBox}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text style={styles.financeMarginLabel}>Potensi Margin Keuntungan</Text>
+                          <View style={styles.marginPercentBadge}>
+                            <Text style={styles.marginPercentText}>+{persentaseMargin}%</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.financeMarginValue}>{formatRupiah(potensiMargin)}</Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.laporanHealthCard}>
+                      <Text style={styles.laporanCardTitle}>Kesehatan Inventaris</Text>
+
+                      <View style={styles.healthStackedBar}>
+                        {summary.statusAman > 0 && (
+                          <View
+                            style={{
+                              flex: summary.statusAman / totalSkuForBar,
+                              backgroundColor: UI.colors.success,
+                            }}
+                          />
+                        )}
+                        {summary.statusMenipis > 0 && (
+                          <View
+                            style={{
+                              flex: summary.statusMenipis / totalSkuForBar,
+                              backgroundColor: UI.colors.warning,
+                            }}
+                          />
+                        )}
+                        {summary.statusHabis > 0 && (
+                          <View
+                            style={{
+                              flex: summary.statusHabis / totalSkuForBar,
+                              backgroundColor: UI.colors.danger,
+                            }}
+                          />
+                        )}
+                      </View>
+
+                      <View style={styles.healthStatsGrid}>
+                        <View style={[styles.healthStatItem, { backgroundColor: UI.colors.successBg, borderColor: UI.colors.successBorder }]}>
+                          <Text style={[styles.healthStatNumber, { color: UI.colors.success }]}>
+                            {summary.statusAman}
+                          </Text>
+                          <Text style={styles.healthStatLabel}>Aman</Text>
+                        </View>
+                        <View style={[styles.healthStatItem, { backgroundColor: UI.colors.warningBg, borderColor: UI.colors.warningBorder }]}>
+                          <Text style={[styles.healthStatNumber, { color: UI.colors.warningDark }]}>
+                            {summary.statusMenipis}
+                          </Text>
+                          <Text style={styles.healthStatLabel}>Menipis</Text>
+                        </View>
+                        <View style={[styles.healthStatItem, { backgroundColor: UI.colors.dangerBg, borderColor: UI.colors.dangerBorder }]}>
+                          <Text style={[styles.healthStatNumber, { color: UI.colors.dangerDark }]}>
+                            {summary.statusHabis}
+                          </Text>
+                          <Text style={styles.healthStatLabel}>Habis</Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.laporanCategoryCard}>
+                      <Text style={styles.laporanCardTitle}>Distribusi Aset per Kategori</Text>
+                      {kategoriSummary.map((kat, idx) => {
+                        const ratio =
+                          totalAsetBeli > 0
+                            ? Math.min(100, Math.round((kat.totalNilai / totalAsetBeli) * 100))
+                            : 0;
+                        const isLast = idx === kategoriSummary.length - 1;
+                        return (
+                          <View
+                            key={kat.kategori}
+                            style={[styles.kategoriRowWrap, isLast && { borderBottomWidth: 0, paddingBottom: 0 }]}
+                          >
+                            <View style={styles.kategoriRow}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.kategoriName}>{kat.kategori}</Text>
+                                <Text style={styles.kategoriDetail}>
+                                  {kat.count} SKU • {kat.totalStok} unit ({ratio}%)
+                                </Text>
+                              </View>
+                              <Text style={styles.kategoriAsetValue}>{formatRupiah(kat.totalNilai)}</Text>
+                            </View>
+                            <View style={styles.kategoriBarTrack}>
+                              <View style={[styles.kategoriBarFill, { width: `${ratio}%` }]} />
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </ScrollView>
+
+                  <View style={styles.sheetActionRow}>
+                    <PrimaryGradientButton
+                      label="Unduh Laporan Inventaris"
+                      iconLeft={<Feather name="download" size={16} color="#FFFFFF" />}
+                      onPress={() => {
+                        const auth = authorizeAction(session, 'report:export');
+                        if (!auth.allowed) {
+                          showAppAlert('Akses Ditolak (403)', auth.reason);
+                          return;
+                        }
+                        showAppAlert(
+                          'Ekspor Laporan Berhasil',
+                          `Ringkasan Inventaris EduStock:\n\n` +
+                            `• Total Barang: ${summary.totalBarang} SKU\n` +
+                            `• Total Unit Fisik: ${summary.totalStok} unit\n` +
+                            `• Total Valuasi Beli: ${formatRupiah(totalAsetBeli)}\n` +
+                            `• Potensi Penjualan: ${formatRupiah(totalNilaiJual)}\n` +
+                            `• Estimasi Margin: ${formatRupiah(potensiMargin)} (+${persentaseMargin}%)\n\n` +
+                            `Laporan siap dicetak atau dikirim ke manajemen logistik.`
+                        );
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* ============================================================= */}
+        {/* 3. MODAL MENU, PROFIL & GANTI PERAN (FILTERED BY RBAC)        */}
+        {/* ============================================================= */}
+        <Modal
+          visible={isMenuModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsMenuModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.sheetModalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+
+              {menuViewMode === 'menu' ? (
+                <>
+                  <View style={styles.sheetModalHeader}>
+                    <View style={styles.sheetHeaderLeft}>
+                      <View style={[styles.sheetIconCircle, { backgroundColor: UI.colors.primaryLight }]}>
+                        <Feather name="grid" size={19} color={UI.colors.primary} />
+                      </View>
+                      <View>
+                        <Text style={styles.sheetModalTitle}>Menu</Text>
+                        <Text style={styles.sheetModalSubtitle}>
+                          Fitur sesuai hak akses {getRoleShortTitle(currentUser.role)}
+                        </Text>
+                      </View>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.sheetCloseBtn}
+                      onPress={() => setIsMenuModalVisible(false)}
+                    >
+                      <Feather name="x" size={18} color={UI.colors.secondary} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 430 }}>
+                    <View style={styles.menuUserCard}>
+                      <View style={styles.menuAvatarCircle}>
+                        <Text style={styles.menuAvatarText}>
+                          {currentUser.name.charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={styles.menuUserInfo}>
+                        <Text style={styles.menuUserName}>{currentUser.name}</Text>
+                        <Text style={styles.menuUserEmail}>{currentUser.email}</Text>
+                        <View style={styles.menuRoleBadgeRow}>
+                          <View style={styles.menuRoleBadge}>
+                            <Text style={styles.menuRoleBadgeText}>
+                              {getRoleShortTitle(currentUser.role)}
+                            </Text>
+                          </View>
+                          <View style={styles.menuVerifiedBadge}>
+                            <Feather name="check" size={11} color={UI.colors.success} />
+                            <Text style={styles.menuVerifiedText}>Terverifikasi</Text>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Menu Items Filtered by Permission */}
+                    <View style={styles.menuListCard}>
+                      <TouchableOpacity
+                        style={styles.menuListRow}
+                        onPress={() => {
+                          setIsMenuModalVisible(false);
+                          router.push('/barang');
+                        }}
+                      >
+                        <View style={styles.menuListIcon}>
+                          <Feather name="box" size={17} color={UI.colors.primary} />
+                        </View>
+                        <Text style={styles.menuListText}>
+                          {isAdmin ? 'Kelola Master Barang' : 'Katalog Barang'}
+                        </Text>
+                        <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                      </TouchableOpacity>
+
+                      {canScanBarcode && (
+                        <TouchableOpacity
+                          style={styles.menuListRow}
+                          onPress={() => {
+                            setIsMenuModalVisible(false);
+                            router.push('/scanner');
+                          }}
+                        >
+                          <View style={styles.menuListIcon}>
+                            <Feather name="camera" size={17} color={UI.colors.primary} />
+                          </View>
+                          <Text style={styles.menuListText}>Scan Barcode</Text>
+                          <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                        </TouchableOpacity>
+                      )}
+
+                      {canSubmitKoreksi && (
+                        <TouchableOpacity
+                          style={styles.menuListRow}
+                          onPress={() => {
+                            setIsMenuModalVisible(false);
+                            openKoreksiModal();
+                          }}
+                        >
+                          <View style={styles.menuListIcon}>
+                            <Feather name="sliders" size={17} color={UI.colors.primary} />
+                          </View>
+                          <Text style={styles.menuListText}>Koreksi Stok (Opname)</Text>
+                          <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                        </TouchableOpacity>
+                      )}
+
+                      {canApproveKoreksi && (
+                        <TouchableOpacity
+                          style={styles.menuListRow}
+                          onPress={() => {
+                            setIsMenuModalVisible(false);
+                            setIsApprovalModalVisible(true);
+                          }}
+                        >
+                          <View style={styles.menuListIcon}>
+                            <Feather name="check-square" size={17} color={UI.colors.primary} />
+                          </View>
+                          <Text style={styles.menuListText}>
+                            Persetujuan Koreksi Stok ({pendingKoreksiCount})
+                          </Text>
+                          <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                        </TouchableOpacity>
+                      )}
+
+                      {canManageUsers && (
+                        <TouchableOpacity
+                          style={styles.menuListRow}
+                          onPress={() => {
+                            setIsMenuModalVisible(false);
+                            setIsUsersModalVisible(true);
+                          }}
+                        >
+                          <View style={styles.menuListIcon}>
+                            <Feather name="users" size={17} color={UI.colors.primary} />
+                          </View>
+                          <Text style={styles.menuListText}>Kelola Pengguna</Text>
+                          <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                        </TouchableOpacity>
+                      )}
+
+                      {canConfigWarehouse && (
+                        <TouchableOpacity
+                          style={styles.menuListRow}
+                          onPress={() => {
+                            setIsMenuModalVisible(false);
+                            openWarehouseModal();
+                          }}
+                        >
+                          <View style={styles.menuListIcon}>
+                            <Feather name="settings" size={17} color={UI.colors.primary} />
+                          </View>
+                          <Text style={styles.menuListText}>Pengaturan Gudang</Text>
+                          <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                        </TouchableOpacity>
+                      )}
+
+                      <TouchableOpacity
+                        style={styles.menuListRow}
+                        onPress={() => {
+                          setIsMenuModalVisible(false);
+                          router.push('/lokasi' as any);
+                        }}
+                      >
+                        <View style={styles.menuListIcon}>
+                          <Feather name="map-pin" size={17} color={UI.colors.primary} />
+                        </View>
+                        <Text style={styles.menuListText}>Lokasi & Presensi Gudang</Text>
+                        <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.menuListRow}
+                        onPress={handleTestAuthHeader}
+                      >
+                        <View style={styles.menuListIcon}>
+                          <Feather name="shield" size={17} color={UI.colors.primary} />
+                        </View>
+                        <Text style={styles.menuListText}>Uji Bearer Token</Text>
+                        <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.menuListRow, { borderBottomWidth: 0 }]}
+                        onPress={() => {
+                          if (!canSwitchDemoRole) {
+                            showAppAlert(
+                              'Mode Akun Reguler',
+                              'Pergantian peran secara langsung hanya tersedia pada Mode Demo/Simulasi. Silakan gunakan tombol Keluar untuk berganti akun.'
+                            );
+                            return;
+                          }
+                          const roleKey =
+                            currentUser.username === 'staff'
+                              ? 'staff'
+                              : currentUser.username === 'manager'
+                              ? 'manager'
+                              : 'admin';
+                          setPendingRoleKey(roleKey);
+                          setMenuViewMode('role');
+                        }}
+                      >
+                        <View style={styles.menuListIcon}>
+                          <Feather
+                            name={canSwitchDemoRole ? 'repeat' : 'lock'}
+                            size={17}
+                            color={canSwitchDemoRole ? UI.colors.primary : UI.colors.muted}
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text
+                            style={[
+                              styles.menuListText,
+                              !canSwitchDemoRole && { color: UI.colors.muted },
+                            ]}
+                          >
+                            Ganti Peran (Demo)
+                          </Text>
+                          {!canSwitchDemoRole && (
+                            <Text style={{ fontSize: 10, color: UI.colors.muted }}>
+                              Nonaktif pada login kredensial produksi
+                            </Text>
+                          )}
+                        </View>
+                        <Feather name="chevron-right" size={17} color={UI.colors.muted} />
+                      </TouchableOpacity>
+                    </View>
+                  </ScrollView>
+
+                  <View style={styles.sheetActionRow}>
+                    <TouchableOpacity
+                      style={styles.menuLogoutBtn}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setIsMenuModalVisible(false);
+                        if (Platform.OS === 'web') {
+                          handleLogout();
+                        } else {
+                          setTimeout(() => handleLogout(), 150);
+                        }
+                      }}
+                    >
+                      <Feather name="log-out" size={16} color={UI.colors.dangerDark} />
+                      <Text style={styles.menuLogoutBtnText}>Keluar dari Akun</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.sheetModalHeader}>
+                    <TouchableOpacity
+                      style={styles.sheetCloseBtn}
+                      onPress={() => setMenuViewMode('menu')}
+                    >
+                      <Feather name="arrow-left" size={18} color={UI.colors.text} />
+                    </TouchableOpacity>
+                    <Text style={[styles.sheetModalTitle, { flex: 1, marginLeft: 10 }]}>
+                      Ganti Peran (Demo)
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.sheetCloseBtn}
+                      onPress={() => setIsMenuModalVisible(false)}
+                    >
+                      <Feather name="x" size={18} color={UI.colors.secondary} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.roleListCard}>
+                    {(
+                      [
+                        { key: 'admin', title: 'Admin Gudang', sub: 'Dhea Ayu' },
+                        { key: 'staff', title: 'Staff Inventory', sub: 'Riqzy Ayu' },
+                        { key: 'manager', title: 'Manajer Operasional', sub: 'Khansa Kirana' },
+                      ] as const
+                    ).map((r, idx) => {
+                      const isChecked = pendingRoleKey === r.key;
+                      return (
+                        <TouchableOpacity
+                          key={r.key}
+                          style={[
+                            styles.roleRadioRow,
+                            idx === 2 && { borderBottomWidth: 0 },
+                          ]}
+                          activeOpacity={0.75}
+                          onPress={() => setPendingRoleKey(r.key)}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={[
+                                styles.roleRadioTitle,
+                                isChecked && { color: UI.colors.primary, fontWeight: '800' },
+                              ]}
+                            >
+                              {r.title}
+                            </Text>
+                            <Text style={styles.roleRadioSub}>{r.sub}</Text>
+                          </View>
+
+                          <View
+                            style={[
+                              styles.radioOuter,
+                              isChecked && styles.radioOuterActive,
+                            ]}
+                          >
+                            {isChecked && <View style={styles.radioInner} />}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <View style={styles.sheetActionRow}>
+                    <PrimaryGradientButton
+                      label="Terapkan Peran"
+                      iconLeft={<Feather name="refresh-cw" size={15} color="#FFFFFF" />}
+                      onPress={() => handleQuickSwitchRole(pendingRoleKey)}
+                      style={{ flex: 1 }}
+                    />
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
+      </SafeAreaView>
+    </SoftBlueBackdrop>
   );
 }
 
-// ==========================================
-// STYLESHEET (Dashboard Screen)
-// ==========================================
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8fafc',
     gap: 12,
   },
   loadingText: {
     fontSize: 14,
-    color: '#64748b',
+    color: UI.colors.secondary,
     fontWeight: '600',
   },
   errorIconBadge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#fee2e2',
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: UI.colors.dangerBg,
+    borderWidth: 1,
+    borderColor: UI.colors.dangerBorder,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
@@ -1606,34 +3031,19 @@ const styles = StyleSheet.create({
   dashboardErrorTitle: {
     fontSize: 18,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
     textAlign: 'center',
   },
   dashboardErrorSubtitle: {
     fontSize: 13,
-    color: '#64748b',
+    color: UI.colors.secondary,
     textAlign: 'center',
     paddingHorizontal: 30,
     lineHeight: 18,
   },
-  dashboardRetryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#dc2626',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    marginTop: 8,
-  },
-  dashboardRetryBtnText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
   safeArea: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    width: '100%',
     paddingTop: Platform.OS === 'android' ? RNStatusBar.currentHeight : 0,
   },
   dashHeader: {
@@ -1641,559 +3051,932 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    paddingVertical: 11,
   },
   dashHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 9,
   },
   miniLogoCube: {
-    width: 26,
-    height: 26,
-    borderRadius: 7,
-    backgroundColor: '#2563eb',
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.logoBox,
     alignItems: 'center',
     justifyContent: 'center',
+    ...primaryButtonShadow,
   },
   dashHeaderTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
+    letterSpacing: -0.3,
+  },
+  dashHeaderSub: {
+    fontSize: 10.5,
+    color: UI.colors.primary,
+    fontWeight: '700',
+  },
+  dashHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerBellBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  headerBellDot: {
+    position: 'absolute',
+    top: 7,
+    right: 8,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: UI.colors.danger,
   },
   logoutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#fff5f5',
+    gap: 5,
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#fee2e2',
+    borderColor: UI.colors.dangerBorder,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 8,
+    height: 36,
+    borderRadius: 12,
   },
   logoutBtnText: {
-    color: '#ef4444',
-    fontSize: 11,
+    color: UI.colors.dangerDark,
+    fontSize: 11.5,
     fontWeight: '700',
   },
   dashScrollView: {
     flex: 1,
+    minHeight: 0,
   },
   dashScrollContent: {
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 20,
+    paddingTop: 4,
+    paddingBottom: 16,
   },
-  darkGreetingCard: {
-    backgroundColor: '#0e192b',
-    borderRadius: 20,
-    padding: 16,
+  offlineAlertCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: UI.colors.warningBg,
+    borderWidth: 1,
+    borderColor: UI.colors.warningBorder,
+    borderRadius: UI.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
     marginBottom: 12,
   },
-  darkCardTopRow: {
+  offlineAlertText: {
+    flex: 1,
+    fontSize: 11.5,
+    color: UI.colors.warningDark,
+    fontWeight: '600',
+  },
+
+  // Greeting
+  greetingRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 14,
+    alignItems: 'center',
+    marginBottom: 12,
   },
   greetingName: {
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: '800',
-    color: '#ffffff',
+    color: UI.colors.text,
+    letterSpacing: -0.4,
   },
-  greetingSub: {
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 3,
-  },
-  greetingRightCol: {
-    alignItems: 'flex-end',
-    gap: 6,
+  greetingRoleRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 5,
   },
   roleBadge: {
-    backgroundColor: '#172554',
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
     paddingHorizontal: 10,
     paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: UI.radius.pill,
   },
   roleBadgeText: {
-    color: '#38bdf8',
-    fontSize: 10.5,
+    color: UI.colors.primary,
+    fontSize: 11,
     fontWeight: '700',
   },
-  switchAccountBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#391b24',
-    borderWidth: 1,
-    borderColor: '#4f1d2b',
+  sessionTypePill: {
+    backgroundColor: UI.colors.primaryLight,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: UI.radius.pill,
   },
-  switchAccountText: {
-    color: '#f87171',
-    fontSize: 10,
+  sessionTypeText: {
+    fontSize: 10.5,
     fontWeight: '700',
+    color: UI.colors.primaryDark,
   },
-  statusChipsRow: {
-    flexDirection: 'row',
-    gap: 6,
+  switchAccountLink: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: UI.colors.secondary,
   },
-  chipItem: {
-    flex: 1,
+
+  // Status Strip Card
+  statusStripCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#182234',
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.lg,
     borderWidth: 1,
-    borderColor: '#243048',
-    borderRadius: 20,
-    paddingVertical: 5,
+    borderColor: UI.colors.borderSoft,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    marginBottom: 16,
+    ...cardShadow,
+  },
+  statusCol: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 3,
+  },
+  statusLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 5,
   },
   statusDot: {
-    width: 6.5,
-    height: 6.5,
-    borderRadius: 3.5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  chipText: {
-    color: '#e2e8f0',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  tokenCard: {
-    backgroundColor: '#f0f9ff',
-    borderWidth: 1,
-    borderColor: '#bae6fd',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-  },
-  tokenCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  tokenBadgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  tokenTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0369a1',
-  },
-  activeTokenBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#e0f2fe',
-    borderWidth: 1,
-    borderColor: '#7dd3fc',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 10,
-    gap: 4,
-  },
-  activeDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#0284c7',
-  },
-  activeTokenText: {
-    fontSize: 9.5,
-    color: '#0369a1',
-    fontWeight: '700',
-  },
-  tokenPreviewBox: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#e0f2fe',
-    borderRadius: 8,
-    padding: 8,
-    marginBottom: 6,
-  },
-  tokenLabel: {
-    fontSize: 10,
-    color: '#64748b',
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  tokenValue: {
-    fontSize: 10.5,
-    color: '#0f172a',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  tokenMetaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  tokenMetaText: {
-    fontSize: 10,
-    color: '#64748b',
-  },
-  tokenMetaBold: {
-    fontWeight: '700',
-    color: '#0369a1',
-  },
-  tokenToggleText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#0284c7',
-  },
-  testHeaderBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#e0f2fe',
-    borderWidth: 1,
-    borderColor: '#bae6fd',
-    borderRadius: 8,
-    paddingVertical: 6,
-    gap: 6,
-  },
-  testHeaderBtnText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: '#0369a1',
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 12,
-  },
-  statCard: {
-    width: '48%',
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 16,
-    padding: 12,
-  },
-  clickableStatCard: {
-    borderColor: '#bfdbfe',
-    backgroundColor: '#fbfdff',
-  },
-  statCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  statIconBadge: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statTitle: {
+  statusColLabel: {
     fontSize: 11.5,
     fontWeight: '600',
-    color: '#64748b',
+    color: UI.colors.secondary,
   },
-  statNumber: {
-    fontSize: 24,
+  statusColValue: {
+    fontSize: 17,
     fontWeight: '800',
-    color: '#0f172a',
-    marginVertical: 4,
+    color: UI.colors.text,
   },
-  statDesc: {
-    fontSize: 10.5,
-    color: '#94a3b8',
-  },
-  statLinkText: {
-    fontSize: 10,
-    color: '#2563eb',
-    fontWeight: '700',
-  },
-  alertBox: {
-    backgroundColor: '#ffeff3',
-    borderWidth: 1,
-    borderColor: '#fecdd3',
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 14,
-  },
-  alertHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  alertHeaderTitle: {
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: '#991b1b',
-  },
-  alertHeaderDesc: {
-    fontSize: 11,
-    color: '#991b1b',
-    marginTop: 4,
-    marginBottom: 10,
-    lineHeight: 15,
-  },
-  alertItemCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#fee2e2',
-  },
-  alertItemTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  alertItemTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#1e293b',
-    flex: 1,
-  },
-  menipisBadge: {
-    backgroundColor: '#fef3c7',
-    borderWidth: 1,
-    borderColor: '#fde68a',
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-  },
-  menipisText: {
-    color: '#b45309',
-    fontSize: 9.5,
-    fontWeight: '700',
-  },
-  alertItemSpecs: {
-    fontSize: 10.5,
-    color: '#64748b',
-    marginTop: 4,
-  },
-  boldRed: {
-    color: '#dc2626',
-    fontWeight: '700',
-  },
-  sectionHeaderRow: {
-    marginBottom: 8,
-  },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#0f172a',
-  },
-  quickActionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  actionBtn: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    gap: 6,
-  },
-  actionCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  actionText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  activityHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  linkViewAll: {
-    color: '#2563eb',
-    fontSize: 11.5,
-    fontWeight: '700',
-  },
-  activityCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    paddingHorizontal: 12,
-  },
-  activityItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-  },
-  activityCircle: {
-    width: 28,
+  statusDivider: {
+    width: 1,
     height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  activityDetails: {
-    flex: 1,
-    gap: 2,
-  },
-  activityTopLine: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  activityItemName: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#1e293b',
-  },
-  activityItemDiff: {
-    fontSize: 11.5,
-    fontWeight: '800',
-  },
-  activityBottomLine: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  activityMeta: {
-    fontSize: 10,
-    color: '#64748b',
-  },
-  activityRemain: {
-    fontSize: 10,
-    color: '#64748b',
-  },
-  bottomNav: {
-    flexDirection: 'row',
-    backgroundColor: '#ffffff',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-  },
-  navItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  navLabel: {
-    fontSize: 9.5,
-    fontWeight: '600',
-    color: '#64748b',
+    backgroundColor: UI.colors.borderSubtle,
   },
 
-  // Styles Modal Transaksi Stok Masuk & Keluar
-  modalBackdrop: {
+  sectionHeaderRow: {
+    marginBottom: 10,
+  },
+  sectionTitle: {
+    fontSize: 14.5,
+    fontWeight: '800',
+    color: UI.colors.text,
+    letterSpacing: -0.2,
+  },
+
+  statsGrid: {
+    gap: 10,
+    marginBottom: 16,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  statCard: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-    justifyContent: 'flex-end',
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
+    padding: 13,
+    ...cardShadow,
   },
-  transaksiModalContent: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
-    maxHeight: '85%',
+  clickableStatCard: {
+    borderColor: UI.colors.primaryBorder,
   },
-  transaksiModalHeader: {
+  statTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    marginBottom: 8,
   },
-  transaksiHeaderLeft: {
+  statIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: UI.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statNumber: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: UI.colors.text,
+    letterSpacing: -0.5,
+  },
+  statMoneyNumber: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: UI.colors.primary,
+    marginVertical: 4,
+  },
+  statTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: UI.colors.secondary,
+    marginTop: 2,
+  },
+
+  // Admin Control Cards
+  adminControlRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  adminControlCard: {
+    flex: 1,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    borderRadius: UI.radius.lg,
+    padding: 13,
+    ...cardShadow,
+  },
+  adminControlIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: UI.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  adminControlTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: UI.colors.text,
+  },
+  adminControlSub: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+    marginTop: 2,
+  },
+
+  // Staff Presensi Card
+  presensiStatusCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    borderRadius: UI.radius.lg,
+    padding: 13,
+    gap: 11,
+    marginBottom: 16,
+    ...cardShadow,
+  },
+  presensiIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presensiCardTitle: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: UI.colors.text,
+  },
+  presensiCardSub: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+    marginTop: 2,
+  },
+  presensiActionBadge: {
+    backgroundColor: UI.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: UI.radius.pill,
+  },
+  presensiActionText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: UI.colors.primary,
+  },
+
+  // Manager Approval Queue
+  approvalBox: {
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    borderRadius: UI.radius.lg,
+    padding: 13,
+    marginBottom: 16,
+    ...cardShadow,
+  },
+  approvalItemCard: {
+    backgroundColor: UI.colors.background,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.md,
+    padding: 12,
+    marginBottom: 8,
+  },
+  approvalTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 4,
+  },
+  approvalItemName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '800',
+    color: UI.colors.text,
+  },
+  pendingPill: {
+    backgroundColor: UI.colors.warningBg,
+    borderWidth: 1,
+    borderColor: UI.colors.warningBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: UI.radius.pill,
+  },
+  pendingPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: UI.colors.warningDark,
+  },
+  approvalMeta: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: UI.colors.primary,
+    marginBottom: 3,
+  },
+  approvalReason: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+    marginBottom: 10,
+  },
+  approvalActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  approvalDecisionMeta: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: UI.colors.secondary,
+    marginTop: 2,
+  },
+
+  quickActionsCard: {
+    flexDirection: 'row',
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    marginBottom: 12,
+    ...cardShadow,
+  },
+  quickActionItem: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 7,
+  },
+  quickActionCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: UI.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickActionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: UI.colors.text,
+    textAlign: 'center',
+    lineHeight: 14,
+  },
+
+  locationBannerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    borderRadius: UI.radius.lg,
+    padding: 13,
+    marginBottom: 16,
+    ...cardShadow,
+  },
+  locationBannerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     flex: 1,
   },
-  transaksiIconCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  locationBannerIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  transaksiModalTitle: {
-    fontSize: 16,
+  locationBannerTextWrap: {
+    flex: 1,
+  },
+  locationTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  locationBannerTitle: {
+    fontSize: 13.5,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
-  transaksiModalSubtitle: {
+  locationBannerTagPill: {
+    backgroundColor: UI.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 5,
+  },
+  locationBannerTag: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: UI.colors.primary,
+  },
+  locationBannerSub: {
     fontSize: 11,
-    color: '#64748b',
-    marginTop: 1,
+    color: UI.colors.secondary,
+    marginTop: 2,
   },
-  transaksiCloseBtn: {
+
+  alertBox: {
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.dangerBorder,
+    borderRadius: UI.radius.lg,
+    padding: 14,
+    marginBottom: 16,
+    ...cardShadow,
+  },
+  alertHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  alertHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  alertIconBadge: {
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: '#f1f5f9',
+    borderRadius: 10,
+    backgroundColor: UI.colors.dangerBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  formSection: {
-    marginBottom: 14,
+  alertHeaderTitle: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: UI.colors.text,
   },
-  formSectionLabel: {
+  alertHeaderDesc: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+    marginTop: 1,
+  },
+  alertCountPill: {
+    backgroundColor: UI.colors.dangerBg,
+    borderWidth: 1,
+    borderColor: UI.colors.dangerBorder,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: UI.radius.pill,
+  },
+  alertCountText: {
+    fontSize: 11.5,
+    fontWeight: '800',
+    color: UI.colors.dangerDark,
+  },
+  alertEmptyBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: UI.colors.successBg,
+    borderRadius: UI.radius.md,
+    padding: 10,
+  },
+  alertEmptyText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: UI.colors.success,
+  },
+  alertItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: UI.colors.background,
+    borderRadius: UI.radius.md,
+    padding: 11,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: UI.colors.border,
+    gap: 8,
+  },
+  alertItemBody: {
+    flex: 1,
+  },
+  alertItemTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 6,
+  },
+  alertItemTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: UI.colors.text,
+    flex: 1,
+  },
+  statusPillSmall: {
+    borderWidth: 1,
+    borderRadius: UI.radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 1.5,
+  },
+  statusPillSmallText: {
+    fontSize: 9.5,
+    fontWeight: '700',
+  },
+  alertItemSpecs: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+    marginTop: 3,
+  },
+  boldRed: {
+    color: UI.colors.dangerDark,
+    fontWeight: '700',
+  },
+
+  activityHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  linkViewAll: {
+    color: UI.colors.primary,
     fontSize: 12,
     fontWeight: '700',
-    color: '#334155',
+  },
+  activityCard: {
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.lg,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+    ...cardShadow,
+  },
+  activityItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.colors.borderSubtle,
+  },
+  activityCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activityDetails: {
+    flex: 1,
+    gap: 3,
+  },
+  activityTopLine: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  activityItemName: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: UI.colors.text,
+  },
+  activityQtyBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 7,
+  },
+  activityItemDiff: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  activityBottomLine: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  activityMeta: {
+    flex: 1,
+    fontSize: 10.5,
+    color: UI.colors.secondary,
+  },
+  activityRemain: {
+    fontSize: 10.5,
+    fontWeight: '600',
+    color: UI.colors.secondary,
+  },
+
+  tokenCard: {
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
+    padding: 14,
+    ...cardShadow,
+  },
+  tokenCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  tokenBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  tokenShieldCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    backgroundColor: UI.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tokenTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: UI.colors.text,
+  },
+  activeTokenBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: UI.colors.successBg,
+    borderWidth: 1,
+    borderColor: UI.colors.successBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: UI.radius.pill,
+    gap: 5,
+  },
+  activeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: UI.colors.success,
+  },
+  activeTokenText: {
+    fontSize: 10,
+    color: UI.colors.success,
+    fontWeight: '700',
+  },
+  tokenPreviewBox: {
+    backgroundColor: UI.colors.background,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.sm,
+    padding: 9,
     marginBottom: 8,
+  },
+  tokenLabel: {
+    fontSize: 10,
+    color: UI.colors.secondary,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  tokenValue: {
+    fontSize: 10.5,
+    color: UI.colors.text,
+    fontFamily: UI.font.mono,
+  },
+  tokenMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  tokenMetaText: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+  },
+  tokenMetaBold: {
+    fontWeight: '700',
+    color: UI.colors.text,
+  },
+  tokenToggleText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: UI.colors.primary,
+  },
+  testHeaderBtn: {
+    height: 40,
+  },
+  testHeaderBtnText: {
+    fontSize: 12,
+  },
+
+  bottomNav: {
+    flexDirection: 'row',
+    backgroundColor: UI.colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: UI.colors.borderSoft,
+    paddingTop: 8,
+    paddingHorizontal: 6,
+  },
+  navItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+  },
+  navIconWrap: {
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: UI.radius.pill,
+  },
+  navIconWrapActive: {
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
+  },
+  navLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: UI.colors.secondary,
+  },
+  navLabelActive: {
+    color: UI.colors.primary,
+    fontWeight: '700',
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'flex-end',
+  },
+  sheetHandle: {
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    alignSelf: 'center',
+    marginBottom: 10,
+  },
+  transaksiModalContent: {
+    backgroundColor: UI.colors.surface,
+    backgroundImage: UI.gradients.headerSoft,
+    borderTopLeftRadius: UI.radius.sheet,
+    borderTopRightRadius: UI.radius.sheet,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    maxHeight: '90%',
+  },
+  transaksiModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  transaksiModalTitle: {
+    fontSize: 16.5,
+    fontWeight: '800',
+    color: UI.colors.text,
+  },
+  transaksiCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formTypeSwitch: {
+    flexDirection: 'row',
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.pill,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    padding: 4,
+    gap: 4,
+    marginBottom: 14,
+  },
+  formTypePill: {
+    flex: 1,
+    height: 36,
+    borderRadius: UI.radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formTypePillActive: {
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
+  },
+  formTypeText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: UI.colors.secondary,
+  },
+  formTypeTextActive: {
+    color: '#FFFFFF',
+  },
+  formSection: {
+    marginBottom: 13,
+  },
+  formSectionLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: UI.colors.text,
+    marginBottom: 7,
   },
   barangScrollPills: {
     gap: 8,
-    paddingBottom: 4,
+    paddingBottom: 2,
   },
   barangSelectPill: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.md,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    minWidth: 140,
+    paddingVertical: 9,
+    minWidth: 146,
+    maxWidth: 185,
   },
   barangSelectPillActive: {
-    backgroundColor: '#eff6ff',
-    borderColor: '#2563eb',
+    backgroundColor: UI.colors.primaryLight,
+    borderColor: UI.colors.primary,
   },
   barangSelectName: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#1e293b',
+    color: UI.colors.text,
     marginBottom: 2,
   },
   barangSelectNameActive: {
-    color: '#2563eb',
+    color: UI.colors.primary,
   },
   barangSelectSub: {
-    fontSize: 10,
-    color: '#64748b',
+    fontSize: 10.5,
+    color: UI.colors.secondary,
   },
   barangSelectSubActive: {
-    color: '#1d4ed8',
+    color: UI.colors.primaryDark,
   },
   stepperContainer: {
     flexDirection: 'row',
@@ -2201,178 +3984,149 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   stepBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#f1f5f9',
+    width: 42,
+    height: 42,
+    borderRadius: UI.radius.md,
+    backgroundColor: UI.colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: UI.colors.borderSoft,
   },
   qtyInput: {
-    width: 60,
-    height: 40,
-    backgroundColor: '#ffffff',
+    width: 64,
+    height: 42,
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 10,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.md,
     textAlign: 'center',
     fontSize: 16,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
   quickAddPill: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    paddingHorizontal: 10,
+    borderColor: UI.colors.primaryBorder,
+    paddingHorizontal: 11,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: UI.radius.md,
   },
   quickAddText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
-    color: '#475569',
+    color: UI.colors.primary,
+  },
+  dateReadonlyBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.md,
+    paddingHorizontal: 13,
+    height: 42,
+  },
+  dateReadonlyText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: UI.colors.text,
   },
   catatanInput: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    height: 42,
-    fontSize: 12.5,
-    color: '#0f172a',
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.md,
+    paddingHorizontal: 13,
+    height: 44,
+    fontSize: 13,
+    color: UI.colors.text,
   },
   calcPreviewCard: {
-    backgroundColor: '#f8fafc',
-    borderRadius: 14,
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.md,
     padding: 12,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    marginBottom: 16,
+    borderColor: UI.colors.borderSoft,
+    marginBottom: 12,
   },
   calcPreviewCardError: {
-    backgroundColor: '#fff5f5',
-    borderColor: '#fca5a5',
+    backgroundColor: UI.colors.dangerBg,
+    borderColor: UI.colors.dangerBorder,
   },
   calcPreviewTitle: {
-    fontSize: 11.5,
+    fontSize: 12,
     fontWeight: '700',
-    color: '#475569',
-    marginBottom: 8,
+    color: UI.colors.text,
+    marginBottom: 7,
   },
   calcRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
     paddingVertical: 3,
+    gap: 12,
   },
   calcLabel: {
-    fontSize: 11,
-    color: '#64748b',
+    fontSize: 11.5,
+    color: UI.colors.secondary,
   },
   calcValue: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '600',
-    color: '#1e293b',
+    color: UI.colors.text,
+    flexShrink: 1,
+    textAlign: 'right',
   },
   calcRowTotal: {
     borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    marginTop: 4,
-    paddingTop: 6,
+    borderTopColor: UI.colors.borderSubtle,
+    marginTop: 5,
+    paddingTop: 7,
   },
   calcTotalLabel: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
   calcTotalValue: {
-    fontSize: 13,
+    fontSize: 13.5,
     fontWeight: '800',
-    color: '#16a34a',
+    color: UI.colors.primary,
   },
   errorWarnBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     marginTop: 8,
-    backgroundColor: '#fee2e2',
-    padding: 6,
-    borderRadius: 6,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.dangerBorder,
+    padding: 8,
+    borderRadius: UI.radius.sm,
   },
   errorWarnText: {
-    fontSize: 10.5,
-    color: '#dc2626',
+    fontSize: 11,
+    color: UI.colors.dangerDark,
     fontWeight: '600',
   },
   modalActionButtons: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 4,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: UI.colors.borderSubtle,
   },
-  modalBatalBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    backgroundColor: '#f8fafc',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalBatalBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#64748b',
-  },
-  modalSubmitBtn: {
-    flex: 2,
-    flexDirection: 'row',
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  modalSubmitBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  offlineAlertCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fffbeb',
-    borderWidth: 1,
-    borderColor: '#fde68a',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 14,
-  },
-  offlineAlertText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#92400e',
-    fontWeight: '500',
-    lineHeight: 18,
-  },
-  // -------------------------------------------------------------
-  // STYLESHEET: MODAL SHEET (MUTASI, LAPORAN, MENU PROFIL)
-  // -------------------------------------------------------------
+
   sheetModalContent: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+    backgroundColor: UI.colors.surface,
+    backgroundImage: UI.gradients.headerSoft,
+    borderTopLeftRadius: UI.radius.sheet,
+    borderTopRightRadius: UI.radius.sheet,
+    paddingHorizontal: 20,
+    paddingTop: 10,
     maxHeight: '90%',
   },
   sheetModalHeader: {
@@ -2381,135 +4135,182 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    borderBottomColor: UI.colors.borderSubtle,
   },
   sheetHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
   },
   sheetIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sheetModalTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
   sheetModalSubtitle: {
-    fontSize: 11,
-    color: '#64748b',
+    fontSize: 11.5,
+    color: UI.colors.secondary,
     marginTop: 1,
   },
   sheetCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#f1f5f9',
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sheetActionRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 12,
-    paddingTop: 10,
+    marginTop: 10,
+    paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
+    borderTopColor: UI.colors.borderSubtle,
   },
-  sheetSecondaryBtn: {
+
+  // Users & Warehouse Modals
+  userRowCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    borderRadius: 12,
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    backgroundColor: '#f8fafc',
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.md,
+    padding: 12,
+    marginBottom: 8,
   },
-  sheetSecondaryBtnText: {
+  userRowName: {
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
+    color: UI.colors.text,
   },
-  // Mutasi Styles
+  userRowMeta: {
+    fontSize: 11,
+    color: UI.colors.secondary,
+    marginTop: 2,
+  },
+  userStatusPill: {
+    backgroundColor: UI.colors.successBg,
+    borderWidth: 1,
+    borderColor: UI.colors.successBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: UI.radius.pill,
+  },
+  userStatusPillOff: {
+    backgroundColor: UI.colors.dangerBg,
+    borderColor: UI.colors.dangerBorder,
+  },
+  userStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: UI.colors.success,
+  },
+  addUserBox: {
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
+    padding: 12,
+    marginTop: 6,
+  },
+  radiusRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  roleSelectChip: {
+    flex: 1,
+    backgroundColor: UI.colors.background,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.pill,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+  },
+  roleSelectChipActive: {
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
+    borderColor: UI.colors.primary,
+  },
+  roleSelectChipText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: UI.colors.secondary,
+  },
+
   mutasiFilterRow: {
     flexDirection: 'row',
     gap: 8,
     marginTop: 12,
-    marginBottom: 6,
+    marginBottom: 8,
   },
   mutasiFilterPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 13,
+    borderRadius: UI.radius.pill,
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: UI.colors.borderSoft,
   },
   mutasiFilterPillActive: {
-    backgroundColor: '#eff6ff',
-    borderColor: '#bfdbfe',
-  },
-  mutasiFilterPillActiveMasuk: {
-    backgroundColor: '#f0fdf4',
-    borderColor: '#bbf7d0',
-  },
-  mutasiFilterPillActiveKeluar: {
-    backgroundColor: '#fef2f2',
-    borderColor: '#fecaca',
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
+    borderColor: UI.colors.primary,
   },
   filterDot: {
     width: 7,
     height: 7,
-    borderRadius: 4,
+    borderRadius: 3.5,
   },
   mutasiFilterText: {
     fontSize: 11.5,
-    fontWeight: '600',
-    color: '#64748b',
+    fontWeight: '700',
+    color: UI.colors.secondary,
   },
   mutasiFilterTextActive: {
-    color: '#2563eb',
-    fontWeight: '700',
-  },
-  mutasiFilterTextActiveMasuk: {
-    color: '#16a34a',
-    fontWeight: '700',
-  },
-  mutasiFilterTextActiveKeluar: {
-    color: '#dc2626',
-    fontWeight: '700',
+    color: '#FFFFFF',
   },
   emptyMutasiBox: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 36,
+    paddingVertical: 30,
     gap: 8,
   },
   emptyMutasiText: {
-    fontSize: 12,
-    color: '#94a3b8',
+    fontSize: 12.5,
+    color: UI.colors.muted,
   },
   mutasiItemCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingVertical: 11,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-    gap: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.md,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    gap: 11,
   },
   mutasiTypeBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 2,
@@ -2521,112 +4322,139 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 8,
   },
   mutasiItemName: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#0f172a',
+    color: UI.colors.text,
     flex: 1,
-    marginRight: 8,
   },
   mutasiItemQty: {
-    fontSize: 13,
+    fontSize: 11.5,
     fontWeight: '800',
   },
   mutasiItemMetaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 3,
+    marginTop: 4,
+    gap: 6,
   },
   mutasiItemDate: {
     fontSize: 10.5,
-    color: '#94a3b8',
+    color: UI.colors.muted,
   },
   mutasiItemOperator: {
     fontSize: 10.5,
-    color: '#64748b',
+    color: UI.colors.secondary,
     fontWeight: '500',
   },
   mutasiItemSisa: {
-    fontSize: 10.5,
-    color: '#64748b',
+    fontSize: 11,
+    color: UI.colors.secondary,
     marginTop: 3,
   },
   boldDark: {
     fontWeight: '700',
-    color: '#1e293b',
+    color: UI.colors.text,
   },
-  // Laporan Styles
+
   laporanFinanceCard: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 16,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
     padding: 14,
-    marginVertical: 8,
+    marginTop: 12,
+    marginBottom: 10,
   },
   laporanCardTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
     marginBottom: 10,
   },
   financeItemRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
+    alignItems: 'center',
+    backgroundColor: UI.colors.background,
+    borderRadius: UI.radius.md,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    padding: 11,
+    marginBottom: 10,
+  },
+  financeMetricBox: {
+    flex: 1,
+  },
+  financeMetricDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: UI.colors.border,
+    marginHorizontal: 12,
   },
   financeLabel: {
     fontSize: 10.5,
-    color: '#64748b',
+    color: UI.colors.secondary,
     marginBottom: 2,
   },
   financeBeliValue: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
   financeJualValue: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
-    color: '#2563eb',
+    color: UI.colors.primary,
   },
   financeMarginBox: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 10,
+    backgroundColor: UI.colors.primaryLight,
+    borderRadius: UI.radius.md,
+    padding: 11,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: UI.colors.primaryBorder,
   },
   financeMarginLabel: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '600',
-    color: '#475569',
+    color: UI.colors.textBody,
   },
   marginPercentBadge: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: UI.colors.successBg,
+    borderWidth: 1,
+    borderColor: UI.colors.successBorder,
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 10,
+    borderRadius: UI.radius.pill,
   },
   marginPercentText: {
     fontSize: 10.5,
     fontWeight: '800',
-    color: '#16a34a',
+    color: UI.colors.success,
   },
   financeMarginValue: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: '#16a34a',
+    fontSize: 17,
+    fontWeight: '800',
+    color: UI.colors.primary,
     marginTop: 4,
   },
   laporanHealthCard: {
-    backgroundColor: '#ffffff',
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#f1f5f9',
-    borderRadius: 16,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
     padding: 14,
-    marginBottom: 8,
+    marginBottom: 10,
+  },
+  healthStackedBar: {
+    flexDirection: 'row',
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: UI.colors.surfaceMuted,
+    marginBottom: 12,
+    gap: 2,
   },
   healthStatsGrid: {
     flexDirection: 'row',
@@ -2637,7 +4465,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 10,
-    borderRadius: 12,
+    borderRadius: UI.radius.md,
     borderWidth: 1,
   },
   healthStatNumber: {
@@ -2645,79 +4473,82 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   healthStatLabel: {
-    fontSize: 10,
-    color: '#64748b',
+    fontSize: 10.5,
+    color: UI.colors.secondary,
     fontWeight: '600',
     marginTop: 2,
   },
   laporanCategoryCard: {
-    backgroundColor: '#ffffff',
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#f1f5f9',
-    borderRadius: 16,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
     padding: 14,
-    marginBottom: 8,
+    marginBottom: 6,
+  },
+  kategoriRowWrap: {
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.colors.borderSubtle,
   },
   kategoriRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f8fafc',
+    marginBottom: 6,
   },
   kategoriName: {
     fontSize: 12.5,
     fontWeight: '700',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
   kategoriDetail: {
     fontSize: 10.5,
-    color: '#64748b',
+    color: UI.colors.secondary,
     marginTop: 1,
   },
   kategoriAsetValue: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#0f172a',
+    color: UI.colors.text,
   },
-  exportReportBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#2563eb',
-    paddingVertical: 13,
-    borderRadius: 14,
+  kategoriBarTrack: {
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: UI.colors.primaryLight,
+    overflow: 'hidden',
   },
-  exportReportBtnText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '700',
+  kategoriBarFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
   },
-  // Menu Styles
+
   menuUserCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0e192b',
-    borderRadius: 16,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    borderRadius: UI.radius.lg,
     padding: 14,
-    marginVertical: 8,
-    gap: 14,
+    marginTop: 12,
+    gap: 13,
   },
   menuAvatarCircle: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#2563eb',
+    backgroundColor: UI.colors.primary,
+    backgroundImage: UI.gradients.primaryBtn,
     alignItems: 'center',
     justifyContent: 'center',
   },
   menuAvatarText: {
     fontSize: 20,
-    fontWeight: '900',
-    color: '#ffffff',
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   menuUserInfo: {
     flex: 1,
@@ -2725,191 +4556,138 @@ const styles = StyleSheet.create({
   menuUserName: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#ffffff',
+    color: UI.colors.text,
   },
   menuUserEmail: {
-    fontSize: 11,
-    color: '#94a3b8',
+    fontSize: 11.5,
+    color: UI.colors.secondary,
     marginTop: 1,
   },
   menuRoleBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginTop: 6,
+    gap: 6,
+    marginTop: 7,
   },
   menuRoleBadge: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: UI.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingVertical: 2.5,
+    borderRadius: UI.radius.pill,
   },
   menuRoleBadgeText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#38bdf8',
+    color: UI.colors.primary,
   },
   menuVerifiedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
+    backgroundColor: UI.colors.successBg,
+    borderWidth: 1,
+    borderColor: UI.colors.successBorder,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: UI.radius.pill,
   },
   menuVerifiedText: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: '#4ade80',
-  },
-  menuSectionBox: {
-    marginTop: 12,
-  },
-  menuSectionTitle: {
-    fontSize: 10.5,
-    fontWeight: '800',
-    color: '#64748b',
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  roleSwitcherContainer: {
-    gap: 8,
-  },
-  roleSwitchCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  roleSwitchCardActive: {
-    backgroundColor: '#eff6ff',
-    borderColor: '#93c5fd',
-  },
-  roleSwitchLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  roleSwitchName: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: '#1e293b',
-  },
-  roleSwitchUser: {
-    fontSize: 10.5,
-    color: '#64748b',
-  },
-  activeCheckPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#2563eb',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  activeCheckText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#ffffff',
+    color: UI.colors.success,
   },
-  switchRoleHint: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748b',
+  menuListCard: {
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
+    marginTop: 12,
+    paddingHorizontal: 14,
   },
-  menuShortcutsRow: {
+  menuListRow: {
     flexDirection: 'row',
-    gap: 8,
+    alignItems: 'center',
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.colors.borderSubtle,
+    gap: 12,
   },
-  menuShortcutBtn: {
-    flex: 1,
+  menuListIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: UI.colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    paddingVertical: 12,
-    gap: 6,
   },
-  menuShortcutText: {
-    fontSize: 10.5,
+  menuListText: {
+    flex: 1,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#334155',
-    textAlign: 'center',
+    color: UI.colors.text,
   },
   menuLogoutBtn: {
     flex: 1,
+    height: 46,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#dc2626',
-    paddingVertical: 13,
-    borderRadius: 14,
+    backgroundColor: UI.colors.dangerBg,
+    borderWidth: 1,
+    borderColor: UI.colors.dangerBorder,
+    borderRadius: UI.radius.md,
   },
   menuLogoutBtnText: {
-    color: '#ffffff',
-    fontSize: 13,
+    color: UI.colors.dangerDark,
+    fontSize: 13.5,
     fontWeight: '700',
   },
-  // Task 03 - Location Intelligence Card
-  locationBannerCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#f5f3ff',
+
+  roleListCard: {
+    backgroundColor: UI.colors.surface,
     borderWidth: 1,
-    borderColor: '#ddd6fe',
-    borderRadius: 16,
-    padding: 12,
-    marginTop: 12,
+    borderColor: UI.colors.borderSoft,
+    borderRadius: UI.radius.lg,
+    marginTop: 14,
+    marginBottom: 8,
+    paddingHorizontal: 14,
   },
-  locationBannerLeft: {
+  roleRadioRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    flex: 1,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.colors.borderSubtle,
   },
-  locationBannerIconCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#ffffff',
+  roleRadioTitle: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: UI.colors.text,
+  },
+  roleRadioSub: {
+    fontSize: 11.5,
+    color: UI.colors.secondary,
+    marginTop: 2,
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: UI.colors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#7c3aed',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
   },
-  locationBannerTextWrap: {
-    flex: 1,
+  radioOuterActive: {
+    borderColor: UI.colors.primary,
   },
-  locationBannerTag: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: '#ffffff',
-    backgroundColor: '#7c3aed',
-    paddingHorizontal: 6,
-    paddingVertical: 1.5,
-    borderRadius: 4,
-  },
-  locationBannerTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#0f172a',
-  },
-  locationBannerSub: {
-    fontSize: 10.5,
-    color: '#64748b',
-    marginTop: 2,
+  radioInner: {
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
+    backgroundColor: UI.colors.primary,
   },
 });

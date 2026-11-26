@@ -1,34 +1,26 @@
 <?php
 /**
  * =========================================================================
- * KONFIGURASI DATABASE & CORS API EDUSTOCK
+ * KONFIGURASI DATABASE, CORS & RBAC AUTH API EDUSTOCK
  * File: backend/api/config.php
  * =========================================================================
  */
 
-// 1. Header CORS (Cross-Origin Resource Sharing)
-// Mengizinkan aplikasi mobile (React Native / Expo / Web) mengakses API
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept");
 header("Content-Type: application/json; charset=UTF-8");
 
-// Tangani Preflight Request dari browser / fetch HTTP
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// 2. Pengaturan Kredensial Database MySQL (Default XAMPP)
 define('DB_HOST', 'localhost');
 define('DB_USER', 'root');
 define('DB_PASS', '');
 define('DB_NAME', 'edustock');
 
-/**
- * Function: Membuka koneksi database menggunakan PDO
- * @return PDO|null
- */
 function getDbConnection() {
     static $pdo = null;
 
@@ -50,14 +42,6 @@ function getDbConnection() {
     }
 }
 
-/**
- * Helper: Mengirimkan response JSON standar yang kompatibel dengan EduStock
- *
- * @param bool $success Status keberhasilan operasi
- * @param string $message Pesan yang informatif bagi pengguna
- * @param mixed $data Data muatan (biasanya array barang/transaksi)
- * @param int $statusCode HTTP Status Code (200, 201, 400, 404, 500)
- */
 function sendJsonResponse($success, $message, $data = null, $statusCode = 200) {
     http_response_code($statusCode);
     echo json_encode([
@@ -69,3 +53,69 @@ function sendJsonResponse($success, $message, $data = null, $statusCode = 200) {
     exit();
 }
 
+/**
+ * Mengambil Bearer Token dari HTTP Authorization header
+ */
+function getBearerTokenFromRequest() {
+    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+    if (!$authHeader && function_exists('apache_request_headers')) {
+        $headers = apache_request_headers();
+        foreach ($headers as $key => $value) {
+            if (strtolower($key) === 'authorization') {
+                $authHeader = $value;
+                break;
+            }
+        }
+    }
+
+    if (preg_match('/Bearer\s(\S+)/i', $authHeader, $matches)) {
+        return $matches[1];
+    }
+    return null;
+}
+
+/**
+ * Verifikasi dan decode JWT Token EduStock untuk RBAC di sisi Server
+ */
+function requireAuthenticatedUser() {
+    $token = getBearerTokenFromRequest();
+    if (!$token) {
+        sendJsonResponse(false, "Token autentikasi (Bearer) tidak ditemukan.", null, 401);
+    }
+
+    $parts = explode('.', $token);
+    if (count($parts) < 2) {
+        sendJsonResponse(false, "Format token autentikasi tidak valid.", null, 401);
+    }
+
+    $payloadJson = base64_decode(strtr($parts[1], '-_', '+/'));
+    $payload = json_decode($payloadJson, true);
+    if (!is_array($payload) || empty($payload['role'])) {
+        sendJsonResponse(false, "Payload token tidak valid atau peran tidak dikenali.", null, 401);
+    }
+
+    if (isset($payload['exp']) && (int)$payload['exp'] < time()) {
+        sendJsonResponse(false, "Sesi token telah kedaluwarsa. Silakan login kembali.", null, 401);
+    }
+
+    return $payload;
+}
+
+/**
+ * Penegakan Role-Based Access Control (RBAC) pada Endpoint Backend
+ */
+function requireRolePermission(array $allowedRoles, $actionName = 'aksi ini') {
+    $user = requireAuthenticatedUser();
+    $role = $user['role'] ?? '';
+
+    if (!in_array($role, $allowedRoles, true)) {
+        sendJsonResponse(
+            false,
+            "Akses ditolak (403): Peran '{$role}' tidak memiliki izin untuk {$actionName}.",
+            null,
+            403
+        );
+    }
+
+    return $user;
+}

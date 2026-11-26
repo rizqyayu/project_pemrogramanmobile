@@ -1,9 +1,9 @@
 <?php
 /**
  * =========================================================================
- * ENDPOINT API: DAFTAR & MANAJEMEN BARANG
+ * ENDPOINT API: DAFTAR & MANAJEMEN BARANG (DILINDUNGI RBAC)
  * File: backend/api/barang.php
- * Method: GET, POST
+ * Method: GET, POST, PUT, DELETE
  * =========================================================================
  */
 
@@ -13,10 +13,15 @@ $pdo = getDbConnection();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 // =========================================================================
-// METHOD GET: Mengambil Data Barang (Semua / Filter / Search / Detail)
+// METHOD GET: Semua role terautentikasi boleh melihat katalog barang
 // =========================================================================
 if ($method === 'GET') {
-    // 1. Jika Database MySQL terhubung
+    $authUser = requireRolePermission(
+        ['Admin Gudang', 'Staff Inventory', 'Pemilik Toko / Manajer'],
+        'melihat katalog barang'
+    );
+    $isStaff = ($authUser['role'] ?? '') === 'Staff Inventory';
+
     if ($pdo !== null) {
         try {
             $id = isset($_GET['id']) ? (int)$_GET['id'] : null;
@@ -24,7 +29,6 @@ if ($method === 'GET') {
             $search = isset($_GET['search']) ? trim($_GET['search']) : null;
             $kategori = isset($_GET['kategori']) ? trim($_GET['kategori']) : null;
 
-            // Kasus A: Ambil 1 barang berdasarkan ID
             if ($id !== null && $id > 0) {
                 $stmt = $pdo->prepare("SELECT * FROM barang WHERE id = :id LIMIT 1");
                 $stmt->execute([':id' => $id]);
@@ -37,13 +41,12 @@ if ($method === 'GET') {
                 $item['id'] = (int)$item['id'];
                 $item['stok'] = (int)$item['stok'];
                 $item['stok_minimum'] = (int)$item['stok_minimum'];
-                $item['harga_beli'] = (float)$item['harga_beli'];
+                $item['harga_beli'] = $isStaff ? 0 : (float)$item['harga_beli'];
                 $item['harga_jual'] = (float)$item['harga_jual'];
 
                 sendJsonResponse(true, "Detail barang berhasil diambil.", $item);
             }
 
-            // Kasus B: Ambil 1 barang berdasarkan Kode (Cocok untuk Scanner Barcode)
             if ($kode !== null && $kode !== '') {
                 $stmt = $pdo->prepare("SELECT * FROM barang WHERE LOWER(kode_barang) = LOWER(:kode) LIMIT 1");
                 $stmt->execute([':kode' => $kode]);
@@ -56,13 +59,12 @@ if ($method === 'GET') {
                 $item['id'] = (int)$item['id'];
                 $item['stok'] = (int)$item['stok'];
                 $item['stok_minimum'] = (int)$item['stok_minimum'];
-                $item['harga_beli'] = (float)$item['harga_beli'];
+                $item['harga_beli'] = $isStaff ? 0 : (float)$item['harga_beli'];
                 $item['harga_jual'] = (float)$item['harga_jual'];
 
                 sendJsonResponse(true, "Barang hasil scan barcode ditemukan.", $item);
             }
 
-            // Kasus C: Daftar Banyak Barang (dengan opsional search & filter kategori)
             $sql = "SELECT * FROM barang WHERE 1=1";
             $params = [];
 
@@ -82,8 +84,7 @@ if ($method === 'GET') {
             $stmt->execute($params);
             $rows = $stmt->fetchAll();
 
-            // Format data numerik dan atribut lengkap
-            $barangList = array_map(function ($row) {
+            $barangList = array_map(function ($row) use ($isStaff) {
                 return [
                     'id'           => (int)$row['id'],
                     'kode_barang'  => (string)$row['kode_barang'],
@@ -92,7 +93,7 @@ if ($method === 'GET') {
                     'stok'         => (int)$row['stok'],
                     'stok_minimum' => (int)$row['stok_minimum'],
                     'satuan'       => (string)$row['satuan'],
-                    'harga_beli'   => (float)$row['harga_beli'],
+                    'harga_beli'   => $isStaff ? 0 : (float)$row['harga_beli'],
                     'harga_jual'   => (float)$row['harga_jual'],
                     'lokasi_rak'   => (string)$row['lokasi_rak'],
                     'gambar'       => isset($row['gambar']) && !empty($row['gambar']) ? (string)$row['gambar'] : null,
@@ -101,16 +102,13 @@ if ($method === 'GET') {
             }, $rows);
 
             sendJsonResponse(true, "Berhasil memuat data dari database MySQL.", $barangList);
-
         } catch (PDOException $e) {
             sendJsonResponse(false, "Terjadi kesalahan kueri database: " . $e->getMessage(), null, 500);
         }
     }
 
-    // 2. Fallback Otomatis: Jika MySQL belum di-import/aktif, baca dari file JSON
     $jsonPath = __DIR__ . '/../../src/data/inventoryData.json';
     if (!file_exists($jsonPath)) {
-        // Coba jalur alternatif jika dipindah ke htdocs/EduStock/backend/api/
         $jsonPath = __DIR__ . '/inventoryData.json';
     }
 
@@ -118,40 +116,34 @@ if ($method === 'GET') {
         $raw = file_get_contents($jsonPath);
         $decoded = json_decode($raw, true);
         if (isset($decoded['barang']) && is_array($decoded['barang'])) {
-            sendJsonResponse(
-                true,
-                "Berhasil memuat data inventaris (Mode Cadangan JSON PHP).",
-                $decoded['barang']
-            );
+            sendJsonResponse(true, "Berhasil memuat data inventaris (Mode Cadangan JSON PHP).", $decoded['barang']);
         }
     }
 
-    // Jika MySQL tidak aktif dan file JSON tidak ditemukan
     sendJsonResponse(
         false,
-        "Database MySQL 'edustock' belum terhubung dan data JSON tidak ditemukan. Pastikan MySQL di XAMPP sudah aktif.",
+        "Database MySQL 'edustock' belum terhubung dan data JSON tidak ditemukan.",
         null,
         500
     );
 }
 
 // =========================================================================
-// METHOD POST: Menambahkan Barang Baru ke Database
+// METHOD POST / PUT / DELETE: Khusus Admin Gudang
 // =========================================================================
 if ($method === 'POST') {
+    requireRolePermission(['Admin Gudang'], 'menambah master barang');
+
     if ($pdo === null) {
         sendJsonResponse(false, "Koneksi database MySQL diperlukan untuk menambah barang.", null, 500);
     }
 
-    // Ambil payload JSON dari body request
     $rawInput = file_get_contents('php://input');
     $input = json_decode($rawInput, true);
-
     if (!is_array($input)) {
         $input = $_POST;
     }
 
-    // Validasi field wajib
     $nama_barang = isset($input['nama_barang']) ? trim($input['nama_barang']) : '';
     $kategori = isset($input['kategori']) ? trim($input['kategori']) : 'Lab Komputer';
     $stok = isset($input['stok']) ? (int)$input['stok'] : 0;
@@ -167,7 +159,6 @@ if ($method === 'POST') {
         sendJsonResponse(false, "Nama barang wajib diisi.", null, 400);
     }
 
-    // Generate kode_barang otomatis jika tidak disediakan (contoh: BRG-0011)
     $kode_barang = isset($input['kode_barang']) ? trim($input['kode_barang']) : '';
     if ($kode_barang === '') {
         $stmtMax = $pdo->query("SELECT MAX(id) as max_id FROM barang");
@@ -197,7 +188,6 @@ if ($method === 'POST') {
         ]);
 
         $newId = (int)$pdo->lastInsertId();
-
         $createdItem = [
             'id'           => $newId,
             'kode_barang'  => $kode_barang,
@@ -214,9 +204,69 @@ if ($method === 'POST') {
         ];
 
         sendJsonResponse(true, "Barang '{$nama_barang}' berhasil ditambahkan ke inventaris.", $createdItem, 201);
-
     } catch (PDOException $e) {
         sendJsonResponse(false, "Gagal menyimpan barang: " . $e->getMessage(), null, 500);
+    }
+}
+
+if ($method === 'PUT') {
+    requireRolePermission(['Admin Gudang'], 'mengubah master barang');
+
+    if ($pdo === null) {
+        sendJsonResponse(false, "Koneksi database MySQL diperlukan untuk memperbarui barang.", null, 500);
+    }
+
+    $input = json_decode(file_get_contents('php://input'), true);
+    $id = isset($input['id']) ? (int)$input['id'] : 0;
+    if ($id <= 0) {
+        sendJsonResponse(false, "ID barang wajib diisi.", null, 400);
+    }
+
+    try {
+        $stmt = $pdo->prepare("
+            UPDATE barang
+            SET nama_barang = :nama_barang,
+                kategori = :kategori,
+                stok_minimum = :stok_minimum,
+                lokasi_rak = :lokasi_rak,
+                harga_beli = :harga_beli,
+                harga_jual = :harga_jual
+            WHERE id = :id
+        ");
+        $stmt->execute([
+            ':nama_barang'  => trim($input['nama_barang'] ?? ''),
+            ':kategori'     => trim($input['kategori'] ?? 'Lab Komputer'),
+            ':stok_minimum' => (int)($input['stok_minimum'] ?? 5),
+            ':lokasi_rak'   => trim($input['lokasi_rak'] ?? 'Gudang Utama'),
+            ':harga_beli'   => (float)($input['harga_beli'] ?? 0),
+            ':harga_jual'   => (float)($input['harga_jual'] ?? 0),
+            ':id'           => $id,
+        ]);
+
+        sendJsonResponse(true, "Data master barang berhasil diperbarui.", ['id' => $id]);
+    } catch (PDOException $e) {
+        sendJsonResponse(false, "Gagal memperbarui barang: " . $e->getMessage(), null, 500);
+    }
+}
+
+if ($method === 'DELETE') {
+    requireRolePermission(['Admin Gudang'], 'menghapus master barang');
+
+    if ($pdo === null) {
+        sendJsonResponse(false, "Koneksi database MySQL diperlukan untuk menghapus barang.", null, 500);
+    }
+
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    if ($id <= 0) {
+        sendJsonResponse(false, "ID barang tidak valid.", null, 400);
+    }
+
+    try {
+        $stmt = $pdo->prepare("DELETE FROM barang WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        sendJsonResponse(true, "Barang ID {$id} berhasil dihapus.", ['id' => $id]);
+    } catch (PDOException $e) {
+        sendJsonResponse(false, "Gagal menghapus barang: " . $e->getMessage(), null, 500);
     }
 }
 
