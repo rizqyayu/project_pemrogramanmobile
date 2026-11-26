@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,8 +7,9 @@ import {
   Platform,
   StatusBar as RNStatusBar,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import {
@@ -17,58 +18,76 @@ import {
   BarcodeScanningResult,
 } from 'expo-camera';
 
-// Import Types & Data Service
-import { Barang } from '../types';
-import { getLoadedInventoryData } from '../services/dataService';
+import { UI, cardShadow } from '../constants/uiTokens';
+import {
+  SoftBlueBackdrop,
+  PrimaryGradientButton,
+  SecondaryOutlineButton,
+} from '../components/SoftBlueUI';
+import { AccessDeniedView } from '../components/AccessDeniedView';
+
+import { AuthSession, Barang } from '../types';
+import { getSavedSession } from '../services/authService';
+import { authorizeAction } from '../services/rbacService';
+import { getStoreSnapshot } from '../services/inventoryStore';
 
 /**
  * =========================================================================
- * HALAMAN 4: SCANNER KAMERA BARCODE & QR CODE (src/app/scanner.tsx)
- * Fitur Sensor Kamera:
- * 1. Menggunakan CameraView & useCameraPermissions dari 'expo-camera'
- * 2. Membaca Barcode & QR Code barang inventaris EduStock secara real-time
- * 3. Menampilkan detail barang yang cocok dari database inventaris
- * 4. Navigasi kembali ke Dashboard dengan router.back()
+ * HALAMAN 4: SCANNER KAMERA BARCODE & QR CODE (DILINDUNGI RBAC)
+ * - Diizinkan: Admin Gudang & Staff Inventory
+ * - Ditolak (403): Manajer Operasional / Belum Login
  * =========================================================================
  */
 export default function ScannerScreen() {
-  // 1. Hook Izin Sensor Kamera
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
 
-  // 2. State Kamera & Pemindaian
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState<boolean>(false);
+
   const [scanned, setScanned] = useState<boolean>(false);
   const [torchOn, setTorchOn] = useState<boolean>(false);
   const [facing, setFacing] = useState<'back' | 'front'>('back');
 
-  // 3. State Hasil Scan
   const [scannedItem, setScannedItem] = useState<Barang | null>(null);
   const [scannedCode, setScannedCode] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState<boolean>(false);
 
-  // Ambil data barang dari database lokal untuk pencocokan barcode
-  const { barangList } = getLoadedInventoryData();
+  useEffect(() => {
+    let active = true;
+    getSavedSession()
+      .then((saved) => {
+        if (active) {
+          setSession(saved);
+          setSessionLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (active) setSessionLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  // -----------------------------------------------------------------------
-  // HANDLER: Proses Barcode yang Berhasil Dipindai
-  // -----------------------------------------------------------------------
+  const authCheck = authorizeAction(session, 'barcode:scan');
+
   const processBarcode = (code: string) => {
+    const guard = authorizeAction(session, 'barcode:scan');
+    if (!guard.allowed) return;
+
     setScanned(true);
     const cleanCode = code.trim();
     setScannedCode(cleanCode);
 
-    // Cari barang berdasarkan kode_barang atau id
+    const { barangList } = getStoreSnapshot();
     const match = barangList.find(
       (b) =>
         b.kode_barang.toLowerCase() === cleanCode.toLowerCase() ||
         String(b.id) === cleanCode
     );
 
-    if (match) {
-      setScannedItem(match);
-    } else {
-      setScannedItem(null);
-    }
-
+    setScannedItem(match || null);
     setModalVisible(true);
   };
 
@@ -84,435 +103,461 @@ export default function ScannerScreen() {
     setModalVisible(false);
   };
 
-  // Format Rupiah
   const formatRupiah = (num: number) => {
     return 'Rp ' + Number(num).toLocaleString('id-ID');
   };
 
-  // -----------------------------------------------------------------------
-  // TAMPILAN: JIKA IZIN KAMERA BELUM DIBERIKAN
-  // -----------------------------------------------------------------------
+  if (!sessionLoaded) {
+    return (
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.permissionContainer}>
+          <ActivityIndicator size="large" color={UI.colors.primary} />
+        </SafeAreaView>
+      </SoftBlueBackdrop>
+    );
+  }
+
+  // ROUTE-LEVEL RBAC GUARD: Blokir Manajer Operasional / User belum login
+  if (!authCheck.allowed) {
+    return (
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.safeArea}>
+          <AccessDeniedView
+            title={authCheck.statusCode === 401 ? 'Sesi Diperlukan' : 'Akses Scanner Ditolak (403)'}
+            message={
+              authCheck.reason ||
+              'Peran Anda tidak memiliki akses ke pemindaian barcode operasional.'
+            }
+            roleName={session?.user?.role}
+            actionLabel={authCheck.statusCode === 401 ? 'Ke Halaman Login' : 'Kembali ke Dashboard'}
+            onAction={() =>
+              authCheck.statusCode === 401 ? router.replace('/') : router.back()
+            }
+          />
+        </SafeAreaView>
+      </SoftBlueBackdrop>
+    );
+  }
+
   if (!permission) {
     return (
-      <SafeAreaView style={styles.permissionContainer}>
-        <Text style={styles.permissionText}>Memeriksa sensor kamera...</Text>
-      </SafeAreaView>
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.permissionContainer}>
+          <Text style={styles.permissionText}>Memeriksa sensor kamera...</Text>
+        </SafeAreaView>
+      </SoftBlueBackdrop>
     );
   }
 
   if (!permission.granted) {
     return (
-      <SafeAreaView style={styles.permissionContainer}>
-        <View style={styles.permissionCard}>
-          <View style={styles.cameraIconBadge}>
-            <Feather name="camera" size={36} color="#2563eb" />
+      <SoftBlueBackdrop>
+        <SafeAreaView style={styles.permissionContainer}>
+          <View style={styles.permissionCard}>
+            <View style={styles.cameraIconBadge}>
+              <Feather name="camera" size={30} color={UI.colors.primary} />
+            </View>
+            <Text style={styles.permissionTitle}>Izin Akses Kamera Diperlukan</Text>
+            <Text style={styles.permissionDesc}>
+              EduStock membutuhkan akses ke sensor kamera untuk memindai barcode dan QR code pada label barang gudang.
+            </Text>
+            <PrimaryGradientButton
+              label="Izinkan Sensor Kamera"
+              iconLeft={<Feather name="check" size={16} color="#FFFFFF" />}
+              onPress={requestPermission}
+              style={{ width: '100%', marginBottom: 10 }}
+            />
+            <SecondaryOutlineButton
+              label="Kembali ke Dashboard"
+              onPress={() => router.back()}
+              style={{ width: '100%', height: 42 }}
+            />
           </View>
-          <Text style={styles.permissionTitle}>Izin Akses Kamera Diperlukan</Text>
-          <Text style={styles.permissionDesc}>
-            EduStock membutuhkan akses ke sensor kamera untuk memindai barcode dan QR code pada label barang gudang.
-          </Text>
-          <TouchableOpacity
-            style={styles.grantButton}
-            activeOpacity={0.8}
-            onPress={requestPermission}
-          >
-            <Feather name="check" size={18} color="#ffffff" />
-            <Text style={styles.grantButtonText}>Izinkan Sensor Kamera</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.cancelBtn}
-            onPress={() => router.back()}
-          >
-            <Text style={styles.cancelBtnText}>Kembali ke Dashboard</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+        </SafeAreaView>
+      </SoftBlueBackdrop>
     );
   }
 
-  // -----------------------------------------------------------------------
-  // TAMPILAN UTAMA: KAMERA SCANNER AKTIF
-  // -----------------------------------------------------------------------
   return (
-    <View style={styles.container}>
-      {/* Sensor Kamera Aktif */}
-      <CameraView
-        style={StyleSheet.absoluteFill}
-        facing={facing}
-        enableTorch={torchOn}
-        barcodeScannerSettings={{
-          barcodeTypes: [
-            'qr',
-            'code128',
-            'code39',
-            'ean13',
-            'ean8',
-            'upc_a',
-            'upc_e',
-          ],
-        }}
-        onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
-      />
-
-      {/* Overlay UI di atas Kamera */}
-      <SafeAreaView style={styles.overlay}>
-        {/* Header Top Controls */}
-        <View style={styles.topControls}>
+    <SoftBlueBackdrop>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <View style={styles.topHeader}>
           <TouchableOpacity
-            style={styles.controlCircle}
-            activeOpacity={0.7}
+            style={styles.headerBackBtn}
+            activeOpacity={0.75}
             onPress={() => router.back()}
           >
-            <Feather name="arrow-left" size={20} color="#ffffff" />
+            <Feather name="arrow-left" size={19} color={UI.colors.text} />
           </TouchableOpacity>
-
-          <Text style={styles.headerScannerTitle}>Scan Barcode Barang</Text>
-
-          {/* Toggle Senter / Torch */}
-          <TouchableOpacity
-            style={[styles.controlCircle, torchOn && styles.controlCircleActive]}
-            activeOpacity={0.7}
-            onPress={() => setTorchOn((prev) => !prev)}
-          >
-            <Feather
-              name={torchOn ? 'zap' : 'zap-off'}
-              size={18}
-              color={torchOn ? '#f59e0b' : '#ffffff'}
-            />
-          </TouchableOpacity>
-
-          {/* Toggle Kamera Depan / Belakang */}
-          <TouchableOpacity
-            style={styles.controlCircle}
-            activeOpacity={0.7}
-            onPress={() =>
-              setFacing((prev) => (prev === 'back' ? 'front' : 'back'))
-            }
-          >
-            <Ionicons name="camera-reverse" size={20} color="#ffffff" />
-          </TouchableOpacity>
+          <Text style={styles.headerScannerTitle}>Scan Barcode</Text>
+          <View style={{ width: 36 }} />
         </View>
 
-        {/* Viewfinder / Reticle Kotak Scanner */}
-        <View style={styles.viewfinderContainer}>
-          <View style={styles.viewfinderFrame}>
-            {/* Sudut-Sudut Reticle */}
-            <View style={[styles.corner, styles.topLeft]} />
-            <View style={[styles.corner, styles.topRight]} />
-            <View style={[styles.corner, styles.bottomLeft]} />
-            <View style={[styles.corner, styles.bottomRight]} />
+        <View style={styles.cameraCardWrapper}>
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing={facing}
+            enableTorch={torchOn}
+            barcodeScannerSettings={{
+              barcodeTypes: [
+                'qr',
+                'code128',
+                'code39',
+                'ean13',
+                'ean8',
+                'upc_a',
+                'upc_e',
+              ],
+            }}
+            onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
+          />
 
-            {/* Garis Merah Laser Pemindai */}
-            <View style={styles.laserLine} />
+          <View style={styles.cameraTopActions}>
+            <TouchableOpacity
+              style={[styles.controlCircle, torchOn && styles.controlCircleActive]}
+              activeOpacity={0.75}
+              onPress={() => setTorchOn((prev) => !prev)}
+            >
+              <Feather
+                name={torchOn ? 'zap' : 'zap-off'}
+                size={17}
+                color={torchOn ? UI.colors.warning : '#FFFFFF'}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.controlCircle}
+              activeOpacity={0.75}
+              onPress={() =>
+                setFacing((prev) => (prev === 'back' ? 'front' : 'back'))
+              }
+            >
+              <Ionicons name="camera-reverse" size={19} color="#FFFFFF" />
+            </TouchableOpacity>
           </View>
-          <Text style={styles.viewfinderHint}>
-            Arahkan kamera ke Barcode / QR Code produk
-          </Text>
+
+          <View style={styles.viewfinderContainer} pointerEvents="none">
+            <View style={styles.viewfinderFrame}>
+              <View style={[styles.corner, styles.topLeft]} />
+              <View style={[styles.corner, styles.topRight]} />
+              <View style={[styles.corner, styles.bottomLeft]} />
+              <View style={[styles.corner, styles.bottomRight]} />
+              <View style={styles.laserLine} />
+            </View>
+          </View>
         </View>
 
-        {/* Tombol Bantuan & Simulasi Demo */}
-        <View style={styles.bottomCard}>
-          <Text style={styles.demoTitle}>Simulasi Pengujian Barcode (Tanpa Fisik):</Text>
+        <Text style={styles.viewfinderHint}>
+          Arahkan kamera ke barcode pada barang
+        </Text>
+
+        <View
+          style={[
+            styles.bottomCard,
+            { paddingBottom: Math.max(insets.bottom, 16) },
+          ]}
+        >
+          <Text style={styles.demoTitle}>Simulasi Pengujian Barcode (Tanpa Fisik)</Text>
           <View style={styles.demoButtonsRow}>
-            <TouchableOpacity
-              style={styles.demoPill}
-              activeOpacity={0.7}
+            <SecondaryOutlineButton
+              label="BRG-0001 (Laptop)"
+              iconLeft={<Feather name="box" size={14} color={UI.colors.primary} />}
               onPress={() => processBarcode('BRG-0001')}
-            >
-              <Feather name="box" size={13} color="#2563eb" />
-              <Text style={styles.demoPillText}>BRG-0001 (Laptop)</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.demoPill}
-              activeOpacity={0.7}
+              style={styles.demoBtn}
+              textStyle={styles.demoBtnText}
+            />
+            <SecondaryOutlineButton
+              label="BRG-0002 (Proyektor)"
+              iconLeft={<Feather name="box" size={14} color={UI.colors.primary} />}
               onPress={() => processBarcode('BRG-0002')}
+              style={styles.demoBtn}
+              textStyle={styles.demoBtnText}
+            />
+          </View>
+        </View>
+
+        <Modal
+          visible={modalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={resetScan}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.modalContent,
+                { paddingBottom: Math.max(insets.bottom, 20) },
+              ]}
             >
-              <Feather name="box" size={13} color="#0891b2" />
-              <Text style={styles.demoPillText}>BRG-0002 (Proyektor)</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </SafeAreaView>
+              <View style={styles.sheetHandle} />
 
-      {/* ----------------------------------------------------------------- */}
-      {/* MODAL HASIL SCAN BARCODE                                         */}
-      {/* ----------------------------------------------------------------- */}
-      <Modal
-        visible={modalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={resetScan}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalContent}>
-            {scannedItem ? (
-              // JIKA BARANG DITEMUKAN
-              <>
-                <View style={styles.modalHeaderRow}>
-                  <View style={styles.successIconCircle}>
-                    <Feather name="check-circle" size={24} color="#16a34a" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.modalSuccessTitle}>Barang Dikenali!</Text>
-                    <Text style={styles.modalCodeText}>Kode: {scannedItem.kode_barang}</Text>
-                  </View>
-                </View>
-
-                {/* Info Card Barang */}
-                <View style={styles.scannedItemBox}>
-                  <Text style={styles.scannedItemName}>{scannedItem.nama_barang}</Text>
-                  <Text style={styles.scannedItemKategori}>Kategori: {scannedItem.kategori}</Text>
-
-                  <View style={styles.scannedMetaRow}>
-                    <View style={styles.metaBadge}>
-                      <Text style={styles.metaBadgeLabel}>Sisa Stok</Text>
-                      <Text style={styles.metaBadgeValue}>
-                        {scannedItem.stok} {scannedItem.satuan}
-                      </Text>
+              {scannedItem ? (
+                <>
+                  <View style={styles.modalHeaderRow}>
+                    <View style={styles.successIconCircle}>
+                      <Feather name="check-circle" size={22} color={UI.colors.success} />
                     </View>
-                    <View style={styles.metaBadge}>
-                      <Text style={styles.metaBadgeLabel}>Lokasi Rak</Text>
-                      <Text style={styles.metaBadgeValue}>{scannedItem.lokasi_rak}</Text>
-                    </View>
-                    <View style={styles.metaBadge}>
-                      <Text style={styles.metaBadgeLabel}>Status</Text>
-                      <Text
-                        style={[
-                          styles.metaBadgeValue,
-                          scannedItem.status_stok === 'Habis' && { color: '#dc2626' },
-                          scannedItem.status_stok === 'Menipis' && { color: '#d97706' },
-                        ]}
-                      >
-                        {scannedItem.status_stok}
-                      </Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modalSuccessTitle}>Barang Dikenali</Text>
+                      <Text style={styles.modalCodeText}>Kode: {scannedItem.kode_barang}</Text>
                     </View>
                   </View>
 
-                  <Text style={styles.scannedPriceText}>
-                    Harga Jual: {formatRupiah(scannedItem.harga_jual)}
-                  </Text>
-                </View>
-
-                {/* Tombol Aksi */}
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={styles.viewCatalogBtn}
-                    onPress={() => {
-                      resetScan();
-                      router.push('/barang');
-                    }}
-                  >
-                    <Feather name="list" size={16} color="#ffffff" />
-                    <Text style={styles.viewCatalogBtnText}>Buka di Daftar Barang</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity style={styles.rescanBtn} onPress={resetScan}>
-                    <Feather name="refresh-cw" size={15} color="#2563eb" />
-                    <Text style={styles.rescanBtnText}>Scan Barang Lain</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            ) : (
-              // JIKA BARANG TIDAK TERDAFTAR
-              <>
-                <View style={styles.modalHeaderRow}>
-                  <View style={[styles.successIconCircle, { backgroundColor: '#fef2f2' }]}>
-                    <Feather name="alert-triangle" size={24} color="#dc2626" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.modalSuccessTitle, { color: '#991b1b' }]}>
-                      Barang Tidak Ditemukan
+                  <View style={styles.scannedItemBox}>
+                    <Text style={styles.scannedItemName}>{scannedItem.nama_barang}</Text>
+                    <Text style={styles.scannedItemKategori}>
+                      Kategori: {scannedItem.kategori}
                     </Text>
-                    <Text style={styles.modalCodeText}>Kode Scan: {scannedCode}</Text>
+
+                    <View style={styles.scannedMetaRow}>
+                      <View style={styles.metaBadge}>
+                        <Text style={styles.metaBadgeLabel}>Sisa Stok</Text>
+                        <Text style={styles.metaBadgeValue}>
+                          {scannedItem.stok} {scannedItem.satuan}
+                        </Text>
+                      </View>
+                      <View style={styles.metaBadge}>
+                        <Text style={styles.metaBadgeLabel}>Lokasi Rak</Text>
+                        <Text style={styles.metaBadgeValue}>{scannedItem.lokasi_rak}</Text>
+                      </View>
+                      <View style={styles.metaBadge}>
+                        <Text style={styles.metaBadgeLabel}>Status</Text>
+                        <Text
+                          style={[
+                            styles.metaBadgeValue,
+                            scannedItem.status_stok === 'Habis' && { color: UI.colors.dangerDark },
+                            scannedItem.status_stok === 'Menipis' && { color: UI.colors.warningDark },
+                            scannedItem.status_stok === 'Aman' && { color: UI.colors.success },
+                          ]}
+                        >
+                          {scannedItem.status_stok}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.scannedPriceRow}>
+                      <Text style={styles.scannedPriceLabel}>Harga Jual</Text>
+                      <Text style={styles.scannedPriceText}>
+                        {formatRupiah(scannedItem.harga_jual)}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-                <Text style={styles.notFoundDesc}>
-                  Kode ini belum terdaftar di database inventaris EduStock. Silakan periksa kembali barcode produk.
-                </Text>
-                <TouchableOpacity style={styles.viewCatalogBtn} onPress={resetScan}>
-                  <Feather name="refresh-cw" size={16} color="#ffffff" />
-                  <Text style={styles.viewCatalogBtnText}>Scan Ulang</Text>
-                </TouchableOpacity>
-              </>
-            )}
+
+                  <View style={styles.modalActions}>
+                    <PrimaryGradientButton
+                      label="Buka di Daftar Barang"
+                      iconLeft={<Feather name="list" size={16} color="#FFFFFF" />}
+                      onPress={() => {
+                        resetScan();
+                        router.push('/barang');
+                      }}
+                    />
+                    <SecondaryOutlineButton
+                      label="Scan Barang Lain"
+                      iconLeft={<Feather name="refresh-cw" size={15} color={UI.colors.primary} />}
+                      onPress={resetScan}
+                    />
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.modalHeaderRow}>
+                    <View style={[styles.successIconCircle, { backgroundColor: UI.colors.dangerBg }]}>
+                      <Feather name="alert-triangle" size={22} color={UI.colors.dangerDark} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.modalSuccessTitle, { color: UI.colors.dangerDark }]}>
+                        Barang Tidak Ditemukan
+                      </Text>
+                      <Text style={styles.modalCodeText}>Kode Scan: {scannedCode}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.notFoundDesc}>
+                    Kode ini belum terdaftar di database inventaris EduStock. Silakan periksa kembali barcode produk.
+                  </Text>
+                  <PrimaryGradientButton
+                    label="Scan Ulang"
+                    iconLeft={<Feather name="refresh-cw" size={16} color="#FFFFFF" />}
+                    onPress={resetScan}
+                  />
+                </>
+              )}
+            </View>
           </View>
-        </View>
-      </Modal>
-    </View>
+        </Modal>
+      </SafeAreaView>
+    </SoftBlueBackdrop>
   );
 }
 
-// ==========================================
-// STYLESHEET (Scanner Screen)
-// ==========================================
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
-    backgroundColor: '#000000',
-  },
-  overlay: {
-    flex: 1,
-    justifyContent: 'space-between',
+    width: '100%',
     paddingTop: Platform.OS === 'android' ? RNStatusBar.currentHeight : 0,
   },
-  topControls: {
+  topHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    paddingVertical: 11,
+  },
+  headerBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    backgroundColor: UI.colors.surface,
+    borderWidth: 1,
+    borderColor: UI.colors.borderSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerScannerTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: UI.colors.text,
+  },
+  cameraCardWrapper: {
+    flex: 1,
+    marginHorizontal: 16,
+    borderRadius: UI.radius.xl,
+    overflow: 'hidden',
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...cardShadow,
+  },
+  cameraTopActions: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    flexDirection: 'row',
     gap: 8,
+    zIndex: 10,
   },
   controlCircle: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: 'rgba(15, 23, 42, 0.58)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   controlCircleActive: {
     backgroundColor: 'rgba(245, 158, 11, 0.35)',
     borderWidth: 1,
-    borderColor: '#f59e0b',
-  },
-  headerScannerTitle: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-    textAlign: 'center',
+    borderColor: UI.colors.warning,
   },
   viewfinderContainer: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   viewfinderFrame: {
-    width: 250,
-    height: 250,
+    width: 228,
+    height: 228,
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 16,
   },
   corner: {
     position: 'absolute',
     width: 32,
     height: 32,
-    borderColor: '#2563eb',
+    borderColor: UI.colors.primaryMid,
   },
   topLeft: {
     top: 0,
     left: 0,
     borderTopWidth: 4,
     borderLeftWidth: 4,
-    borderTopLeftRadius: 10,
+    borderTopLeftRadius: 14,
   },
   topRight: {
     top: 0,
     right: 0,
     borderTopWidth: 4,
     borderRightWidth: 4,
-    borderTopRightRadius: 10,
+    borderTopRightRadius: 14,
   },
   bottomLeft: {
     bottom: 0,
     left: 0,
     borderBottomWidth: 4,
     borderLeftWidth: 4,
-    borderBottomLeftRadius: 10,
+    borderBottomLeftRadius: 14,
   },
   bottomRight: {
     bottom: 0,
     right: 0,
     borderBottomWidth: 4,
     borderRightWidth: 4,
-    borderBottomRightRadius: 10,
+    borderBottomRightRadius: 14,
   },
   laserLine: {
-    width: '85%',
+    width: '84%',
     height: 2,
-    backgroundColor: '#ef4444',
-    shadowColor: '#ef4444',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
-    elevation: 4,
+    backgroundColor: UI.colors.danger,
   },
   viewfinderHint: {
-    color: '#ffffff',
+    color: UI.colors.secondary,
     fontSize: 12.5,
     fontWeight: '600',
-    marginTop: 18,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
+    textAlign: 'center',
+    marginTop: 14,
+    marginBottom: 14,
   },
   bottomCard: {
-    backgroundColor: 'rgba(15, 23, 42, 0.92)',
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderTopWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   demoTitle: {
-    color: '#94a3b8',
-    fontSize: 11,
-    fontWeight: '600',
+    color: UI.colors.secondary,
+    fontSize: 11.5,
+    fontWeight: '700',
     marginBottom: 8,
     textAlign: 'center',
   },
   demoButtonsRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
   },
-  demoPill: {
+  demoBtn: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1e293b',
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 10,
-    paddingVertical: 8,
-    gap: 6,
+    height: 44,
   },
-  demoPillText: {
-    color: '#f8fafc',
-    fontSize: 11,
-    fontWeight: '700',
+  demoBtnText: {
+    fontSize: 11.5,
   },
+
   permissionContainer: {
     flex: 1,
-    backgroundColor: '#f8fafc',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
   permissionCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 24,
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.xl,
     padding: 24,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: UI.colors.borderSoft,
     maxWidth: 340,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    width: '100%',
+    ...cardShadow,
   },
   cameraIconBadge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#eff6ff',
+    width: 66,
+    height: 66,
+    borderRadius: 20,
+    backgroundColor: UI.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: UI.colors.primaryBorder,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
@@ -520,57 +565,42 @@ const styles = StyleSheet.create({
   permissionTitle: {
     fontSize: 17,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
     textAlign: 'center',
     marginBottom: 8,
   },
   permissionDesc: {
     fontSize: 12.5,
-    color: '#64748b',
+    color: UI.colors.secondary,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 19,
     marginBottom: 20,
   },
-  grantButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2563eb',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    gap: 8,
-    width: '100%',
-    marginBottom: 10,
-  },
-  grantButtonText: {
-    color: '#ffffff',
-    fontSize: 13.5,
-    fontWeight: '700',
-  },
-  cancelBtn: {
-    paddingVertical: 8,
-  },
-  cancelBtnText: {
-    color: '#64748b',
-    fontSize: 12,
-    fontWeight: '600',
-  },
   permissionText: {
-    color: '#64748b',
+    color: UI.colors.secondary,
     fontSize: 14,
   },
+
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
     justifyContent: 'flex-end',
   },
+  sheetHandle: {
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    alignSelf: 'center',
+    marginBottom: 10,
+  },
   modalContent: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+    backgroundColor: UI.colors.surface,
+    backgroundImage: UI.gradients.headerSoft,
+    borderTopLeftRadius: UI.radius.sheet,
+    borderTopRightRadius: UI.radius.sheet,
+    paddingHorizontal: 20,
+    paddingTop: 10,
   },
   modalHeaderRow: {
     flexDirection: 'row',
@@ -581,107 +611,90 @@ const styles = StyleSheet.create({
   successIconCircle: {
     width: 44,
     height: 44,
-    borderRadius: 22,
-    backgroundColor: '#f0fdf4',
+    borderRadius: 14,
+    backgroundColor: UI.colors.successBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalSuccessTitle: {
-    fontSize: 16,
+    fontSize: 16.5,
     fontWeight: '800',
-    color: '#15803d',
+    color: UI.colors.success,
   },
   modalCodeText: {
     fontSize: 12,
-    color: '#64748b',
+    color: UI.colors.secondary,
     fontWeight: '600',
+    marginTop: 1,
   },
   scannedItemBox: {
-    backgroundColor: '#f8fafc',
-    borderRadius: 16,
+    backgroundColor: UI.colors.surface,
+    borderRadius: UI.radius.lg,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: UI.colors.borderSoft,
     marginBottom: 16,
   },
   scannedItemName: {
-    fontSize: 15,
+    fontSize: 15.5,
     fontWeight: '800',
-    color: '#0f172a',
+    color: UI.colors.text,
     marginBottom: 2,
   },
   scannedItemKategori: {
-    fontSize: 11.5,
-    color: '#64748b',
-    marginBottom: 10,
+    fontSize: 12,
+    color: UI.colors.secondary,
+    marginBottom: 12,
   },
   scannedMetaRow: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   metaBadge: {
     flex: 1,
-    backgroundColor: '#ffffff',
-    padding: 8,
-    borderRadius: 8,
+    backgroundColor: UI.colors.background,
+    padding: 9,
+    borderRadius: UI.radius.sm,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: UI.colors.borderSoft,
   },
   metaBadgeLabel: {
-    fontSize: 9.5,
-    color: '#94a3b8',
+    fontSize: 10,
+    color: UI.colors.secondary,
     fontWeight: '600',
     marginBottom: 2,
   },
   metaBadgeValue: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#0f172a',
+    color: UI.colors.text,
+  },
+  scannedPriceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: UI.colors.borderSubtle,
+  },
+  scannedPriceLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: UI.colors.secondary,
   },
   scannedPriceText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#2563eb',
-    marginTop: 2,
+    fontSize: 14.5,
+    fontWeight: '800',
+    color: UI.colors.primary,
   },
   notFoundDesc: {
     fontSize: 12.5,
-    color: '#64748b',
-    lineHeight: 18,
+    color: UI.colors.secondary,
+    lineHeight: 19,
     marginBottom: 16,
   },
   modalActions: {
-    gap: 8,
-  },
-  viewCatalogBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2563eb',
-    borderRadius: 12,
-    paddingVertical: 12,
-    gap: 8,
-  },
-  viewCatalogBtnText: {
-    color: '#ffffff',
-    fontSize: 13.5,
-    fontWeight: '700',
-  },
-  rescanBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#eff6ff',
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 12,
-    paddingVertical: 10,
-    gap: 6,
-  },
-  rescanBtnText: {
-    color: '#1d4ed8',
-    fontSize: 13,
-    fontWeight: '700',
+    gap: 10,
   },
 });

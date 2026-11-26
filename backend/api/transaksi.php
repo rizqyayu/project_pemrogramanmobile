@@ -1,7 +1,7 @@
 <?php
 /**
  * =========================================================================
- * ENDPOINT API: RIWAYAT & PENCATATAN TRANSAKSI STOK
+ * ENDPOINT API: RIWAYAT & PENCATATAN TRANSAKSI STOK (DILINDUNGI RBAC)
  * File: backend/api/transaksi.php
  * Method: GET, POST
  * =========================================================================
@@ -13,12 +13,26 @@ $pdo = getDbConnection();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 // =========================================================================
-// METHOD GET: Mengambil Riwayat Transaksi Stok (Masuk & Keluar)
+// METHOD GET:
+// - Admin Gudang & Manajer: semua riwayat transaksi
+// - Staff Inventory: HANYA riwayat transaksi miliknya
 // =========================================================================
 if ($method === 'GET') {
+    $authUser = requireRolePermission(
+        ['Admin Gudang', 'Staff Inventory', 'Pemilik Toko / Manajer'],
+        'melihat riwayat mutasi stok'
+    );
+    $role = $authUser['role'] ?? '';
+    $userName = $authUser['name'] ?? '';
+
     if ($pdo !== null) {
         try {
-            $stmt = $pdo->query("SELECT * FROM transaksi ORDER BY id DESC");
+            if ($role === 'Staff Inventory') {
+                $stmt = $pdo->prepare("SELECT * FROM transaksi WHERE operator = :operator ORDER BY id DESC");
+                $stmt->execute([':operator' => $userName]);
+            } else {
+                $stmt = $pdo->query("SELECT * FROM transaksi ORDER BY id DESC");
+            }
             $rows = $stmt->fetchAll();
 
             $transaksiList = array_map(function ($row) {
@@ -36,13 +50,12 @@ if ($method === 'GET') {
                 ];
             }, $rows);
 
-            sendJsonResponse(true, "Berhasil memuat riwayat transaksi dari database.", $transaksiList);
+            sendJsonResponse(true, "Berhasil memuat riwayat transaksi.", $transaksiList);
         } catch (PDOException $e) {
             sendJsonResponse(false, "Terjadi kesalahan kueri transaksi: " . $e->getMessage(), null, 500);
         }
     }
 
-    // Fallback JSON
     $jsonPath = __DIR__ . '/../../src/data/inventoryData.json';
     if (!file_exists($jsonPath)) {
         $jsonPath = __DIR__ . '/inventoryData.json';
@@ -52,7 +65,13 @@ if ($method === 'GET') {
         $raw = file_get_contents($jsonPath);
         $decoded = json_decode($raw, true);
         if (isset($decoded['transaksi']) && is_array($decoded['transaksi'])) {
-            sendJsonResponse(true, "Berhasil memuat data transaksi (Mode Cadangan JSON).", $decoded['transaksi']);
+            $list = $decoded['transaksi'];
+            if ($role === 'Staff Inventory') {
+                $list = array_values(array_filter($list, function ($item) use ($userName) {
+                    return ($item['operator'] ?? '') === $userName;
+                }));
+            }
+            sendJsonResponse(true, "Berhasil memuat data transaksi (Mode Cadangan JSON).", $list);
         }
     }
 
@@ -60,16 +79,20 @@ if ($method === 'GET') {
 }
 
 // =========================================================================
-// METHOD POST: Mencatat Transaksi Baru & Mengupdate Stok Barang
+// METHOD POST: Mencatat Transaksi Baru (Hanya Admin Gudang & Staff Inventory)
 // =========================================================================
 if ($method === 'POST') {
+    $authUser = requireRolePermission(
+        ['Admin Gudang', 'Staff Inventory'],
+        'mencatat transaksi stok masuk/keluar'
+    );
+
     if ($pdo === null) {
         sendJsonResponse(false, "Koneksi database MySQL diperlukan untuk mencatat transaksi.", null, 500);
     }
 
     $rawInput = file_get_contents('php://input');
     $input = json_decode($rawInput, true);
-
     if (!is_array($input)) {
         $input = $_POST;
     }
@@ -77,18 +100,18 @@ if ($method === 'POST') {
     $id_barang = isset($input['id_barang']) ? (int)$input['id_barang'] : 0;
     $jenis = isset($input['jenis']) && strtolower($input['jenis']) === 'keluar' ? 'keluar' : 'masuk';
     $jumlah = isset($input['jumlah']) ? (int)$input['jumlah'] : 0;
-    $operator = isset($input['operator']) ? trim($input['operator']) : 'Admin Gudang';
-    $role_operator = isset($input['role_operator']) ? trim($input['role_operator']) : 'Admin Gudang';
+
+    // Gunakan identitas dari token terverifikasi, bukan percaya input body secara membabi buta
+    $operator = $authUser['name'] ?? ($input['operator'] ?? 'Operator');
+    $role_operator = $authUser['role'] ?? ($input['role_operator'] ?? 'Staff Inventory');
 
     if ($id_barang <= 0 || $jumlah <= 0) {
         sendJsonResponse(false, "ID barang dan jumlah unit transaksi (minimal 1) wajib diisi.", null, 400);
     }
 
     try {
-        // Mulai Database Transaction untuk integritas data
         $pdo->beginTransaction();
 
-        // 1. Ambil data barang saat ini dengan FOR UPDATE (row-level lock)
         $stmtBarang = $pdo->prepare("SELECT * FROM barang WHERE id = :id FOR UPDATE");
         $stmtBarang->execute([':id' => $id_barang]);
         $barang = $stmtBarang->fetch();
@@ -100,7 +123,6 @@ if ($method === 'POST') {
 
         $stokSekarang = (int)$barang['stok'];
 
-        // 2. Hitung stok akhir dan validasi kecukupan stok jika barang keluar
         if ($jenis === 'keluar') {
             if ($jumlah > $stokSekarang) {
                 $pdo->rollBack();
@@ -116,15 +138,13 @@ if ($method === 'POST') {
             $sisa_stok = $stokSekarang + $jumlah;
         }
 
-        // 3. Update stok di tabel barang
         $stmtUpdate = $pdo->prepare("UPDATE barang SET stok = :sisa_stok WHERE id = :id");
         $stmtUpdate->execute([
             ':sisa_stok' => $sisa_stok,
             ':id'        => $id_barang,
         ]);
 
-        // 4. Catat riwayat di tabel transaksi
-        $tanggalStr = date('j M Y'); // Contoh: "3 Nov 2026"
+        $tanggalStr = date('j M Y');
         $stmtInsert = $pdo->prepare("
             INSERT INTO transaksi (id_barang, nama_barang, jenis, jumlah, satuan, tanggal, operator, role_operator, sisa_stok)
             VALUES (:id_barang, :nama_barang, :jenis, :jumlah, :satuan, :tanggal, :operator, :role_operator, :sisa_stok)
@@ -142,8 +162,6 @@ if ($method === 'POST') {
         ]);
 
         $newTrxId = (int)$pdo->lastInsertId();
-
-        // Selesai & Commit Transaction
         $pdo->commit();
 
         $resultData = [
@@ -160,7 +178,6 @@ if ($method === 'POST') {
         ];
 
         sendJsonResponse(true, "Transaksi stok {$jenis} berhasil dicatat.", $resultData, 201);
-
     } catch (Exception $e) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -170,4 +187,3 @@ if ($method === 'POST') {
 }
 
 sendJsonResponse(false, "Method {$method} tidak didukung pada endpoint ini.", null, 405);
-

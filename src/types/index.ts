@@ -1,6 +1,5 @@
 // ==========================================
 // MODELING DATA & TYPES (TypeScript)
-// Memenuhi rubrik: "Menerapkan Type & Array of Objects"
 // ==========================================
 
 export type UserRole = 'Admin Gudang' | 'Staff Inventory' | 'Pemilik Toko / Manajer';
@@ -12,6 +11,7 @@ export interface User {
   name: string;
   email: string;
   role: UserRole;
+  aktif?: boolean;
 }
 
 export type StatusStok = 'Aman' | 'Menipis' | 'Habis';
@@ -32,7 +32,7 @@ export interface Barang {
   status_stok?: StatusStok;
 }
 
-export type JenisTransaksi = 'masuk' | 'keluar';
+export type JenisTransaksi = 'masuk' | 'keluar' | 'koreksi';
 
 export interface TransaksiStok {
   id: number;
@@ -45,6 +45,48 @@ export interface TransaksiStok {
   operator: string;
   role_operator: string;
   sisa_stok: number;
+  catatan?: string;
+}
+
+export type KoreksiStatus = 'pending' | 'approved' | 'rejected';
+
+export interface KoreksiStokRequest {
+  id: number;
+  id_barang: number;
+  kode_barang: string;
+  nama_barang: string;
+  satuan: string;
+  stok_sistem: number;
+  stok_fisik: number;
+  selisih: number;
+  alasan: string;
+  diajukan_oleh: string;
+  role_pengaju: UserRole;
+  tanggal_pengajuan: string;
+  status: KoreksiStatus;
+  diputuskan_oleh?: string;
+  tanggal_keputusan?: string;
+}
+
+export interface WarehouseConfig {
+  nama_gudang: string;
+  alamat_gudang: string;
+  latitude: number;
+  longitude: number;
+  radius_geofence: number;
+  interval_gps_ms: number;
+}
+
+export interface PresensiLog {
+  id: number;
+  nama: string;
+  role: UserRole;
+  waktu: string;
+  tanggal: string;
+  jarak_meter: number;
+  dalam_area: boolean;
+  alamat: string;
+  koordinat: string;
 }
 
 export interface InventorySummary {
@@ -61,6 +103,7 @@ export interface AuthSession {
   user: User;
   token: string;
   expiresAt: string;
+  isDemo?: boolean;
 }
 
 export interface LoginResult {
@@ -69,10 +112,31 @@ export interface LoginResult {
   session?: AuthSession;
 }
 
-// ==========================================
-// TIPE & STRUKTUR TASK 01 - HANDLE API ERROR
-// Memenuhi Rubrik: 2xx (Success), 4xx (Client Error), 5xx (Server Error), Request Gagal
-// ==========================================
+export type Permission =
+  | 'dashboard:view'
+  | 'catalog:view'
+  | 'catalog:create'
+  | 'catalog:edit'
+  | 'catalog:delete'
+  | 'catalog:view_finance'
+  | 'category:manage'
+  | 'barcode:scan'
+  | 'stock:masuk'
+  | 'stock:keluar'
+  | 'stock:koreksi_submit'
+  | 'stock:koreksi_approve'
+  | 'transaksi:view_all'
+  | 'transaksi:view_own'
+  | 'report:view'
+  | 'report:export'
+  | 'users:manage'
+  | 'warehouse:config'
+  | 'location:view'
+  | 'location:presensi'
+  | 'location:geofence_admin'
+  | 'staff:monitor'
+  | 'demo:switch_role';
+
 export type ApiErrorKind = '4xx' | '5xx' | 'NETWORK_ERROR';
 
 export interface AppApiError {
