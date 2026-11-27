@@ -107,7 +107,13 @@ export function authorizeAction(
   }
 
   const decoded = decodeToken(session.token);
-  if (!decoded || !decoded.role) {
+  // Pada Supabase JWT, klaim role tingkat atas bernilai 'authenticated', sedangkan role aplikasi berada di user_metadata.role
+  const tokenRole =
+    decoded?.user_metadata?.role ||
+    (decoded?.role && decoded.role !== 'authenticated' ? decoded.role : undefined) ||
+    session.user.role;
+
+  if (!decoded || !tokenRole) {
     return {
       allowed: false,
       statusCode: 401,
@@ -124,7 +130,7 @@ export function authorizeAction(
   }
 
   // Pastikan role di state lokal sinkron dengan klaim role di token JWT
-  if (decoded.role !== session.user.role) {
+  if (tokenRole !== session.user.role) {
     return {
       allowed: false,
       statusCode: 403,
@@ -145,7 +151,7 @@ export function authorizeAction(
     }
   }
 
-  const role = decoded.role as UserRole;
+  const role = tokenRole as UserRole;
   const allowedList = ROLE_PERMISSIONS[role] || [];
 
   if (!allowedList.includes(permission)) {

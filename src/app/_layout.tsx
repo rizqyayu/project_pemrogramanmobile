@@ -1,40 +1,61 @@
-import React from 'react';
-import { Stack } from 'expo-router';
+import React, { useEffect } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { Stack, router, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { OfflineBanner } from '../components/OfflineBanner';
+import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { UI } from '../constants/uiTokens';
 
 /**
  * =========================================================================
- * ROOT LAYOUT (Expo Router Navigation Stack)
- * Memenuhi Kriteria Modul 2: Penerapan _layout.tsx & <Stack.Screen />
- *
- * PENJELASAN UNTUK UJIAN PRAKTIK:
- * 1. File '_layout.tsx' di Expo Router bertindak sebagai pembungkus utama
- *    (layout wrapper) untuk seluruh rute halaman di dalam folder 'src/app/'.
- * 2. Komponen '<Stack>' bertindak sebagai Stack Navigator, yaitu tumpukan
- *    layar yang memungkinkan transisi navigasi maju (push), tumpuk (replace),
- *    dan mundur (back).
- * 3. Komponen '<Stack.Screen />' digunakan untuk mendaftarkan dan mengonfigurasi
- *    setiap rute yang tersedia (seperti judul header, animasi, dan visibilitas header).
+ * ROOT LAYOUT & ROUTE PROTECTION GUARD (Modul 2 + Modul 4)
+ * - Membungkus seluruh aplikasi dengan AuthProvider global
+ * - Menggunakan useSegments() untuk menjaga rute terlindungi tanpa flicker:
+ *   1. Saat isLoading === true: tampilkan perisai pemuatan (tidak redirect)
+ *   2. Belum login dan mengakses halaman dalam -> arahkan ke '/' (Login)
+ *   3. Sudah login dan masih di halaman login -> arahkan ke '/dashboard'
  * =========================================================================
  */
-export default function RootLayout() {
+function RootNavigatorWithGuard() {
+  const { session, isLoading } = useAuth();
+  const segments = useSegments();
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const firstSegment = segments[0] as string | undefined;
+    const isOnLoginScreen = !firstSegment || firstSegment === 'index';
+
+    if (!session && !isOnLoginScreen) {
+      router.replace('/');
+    } else if (session && isOnLoginScreen) {
+      router.replace('/dashboard');
+    }
+  }, [session, isLoading, segments]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.guardLoadingContainer}>
+        <ActivityIndicator size="large" color={UI.colors.primary} />
+        <Text style={styles.guardLoadingText}>Memverifikasi sesi terenkripsi...</Text>
+      </View>
+    );
+  }
+
   return (
     <>
-      {/* Mengatur warna indikator status bar perangkat */}
-      <StatusBar style="dark" />
       {/* Indikator Global Offline Handling di seluruh aplikasi */}
       <OfflineBanner />
 
       {/* Stack Navigator membungkus semua halaman aplikasi */}
       <Stack
         screenOptions={{
-          headerShown: false, // Menggunakan custom header di masing-masing screen agar UI EduStock konsisten & rapi
+          headerShown: false,
           contentStyle: { backgroundColor: '#F4F8FF' },
-          animation: 'slide_from_right', // Transisi animasi halus saat membuka halaman baru
+          animation: 'slide_from_right',
         }}
       >
-        {/* Rute 1: Halaman Login EduStock (src/app/index.tsx) */}
+        {/* Rute 1: Halaman Login & Daftar Akun EduStock (src/app/index.tsx) */}
         <Stack.Screen
           name="index"
           options={{
@@ -73,7 +94,39 @@ export default function RootLayout() {
             title: 'Lokasi & Geofence Gudang',
           }}
         />
+
+        {/* Rute 6: Halaman Transaksi Stok Masuk & Keluar (src/app/transaksi.tsx) */}
+        <Stack.Screen
+          name="transaksi"
+          options={{
+            title: 'Transaksi Stok',
+          }}
+        />
       </Stack>
     </>
   );
 }
+
+export default function RootLayout() {
+  return (
+    <AuthProvider>
+      <StatusBar style="dark" />
+      <RootNavigatorWithGuard />
+    </AuthProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  guardLoadingContainer: {
+    flex: 1,
+    backgroundColor: '#F4F8FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  guardLoadingText: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: UI.colors.secondary,
+  },
+});

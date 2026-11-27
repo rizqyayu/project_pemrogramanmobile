@@ -1,10 +1,16 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Session } from '@supabase/supabase-js';
 import rawInventoryData from '../data/inventoryData.json';
-import { User, AuthSession, LoginResult } from '../types';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { AuthSession, LoginResult, User, UserRole } from '../types';
+import {
+  ExpoSecureStoreAdapter,
+  deleteAuthToken,
+  saveAuthToken,
+} from './secureStorage';
 
-const STORAGE_KEY_TOKEN = '@edustock_auth_token';
-const STORAGE_KEY_USER = '@edustock_auth_user';
-const STORAGE_KEY_IS_DEMO = '@edustock_auth_is_demo';
+const STORAGE_KEY_TOKEN = 'edustock_auth_token';
+const STORAGE_KEY_USER = 'edustock_auth_user';
+const STORAGE_KEY_IS_DEMO = 'edustock_auth_is_demo';
 
 // In-memory fallback untuk keamanan & performa
 let memorySession: AuthSession | null = null;
@@ -173,14 +179,178 @@ export async function loginAsDemo(roleKey: 'admin' | 'staff' | 'manager'): Promi
   return session;
 }
 
+const VALID_ROLES: UserRole[] = [
+  'Admin Gudang',
+  'Staff Inventory',
+  'Pemilik Toko / Manajer',
+];
+
+function normalizeUserRole(rawRole: unknown): UserRole {
+  if (typeof rawRole === 'string' && VALID_ROLES.includes(rawRole as UserRole)) {
+    return rawRole as UserRole;
+  }
+  return 'Admin Gudang';
+}
+
+function stableNumericId(uid: string): number {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = (hash * 31 + uid.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) || 1;
+}
+
+/**
+ * Konversi Session Supabase menjadi AuthSession EduStock agar RBAC & seluruh modul tetap kompatibel.
+ */
+export function mapSupabaseSessionToAuthSession(sbSession: Session): AuthSession {
+  const sbUser = sbSession.user;
+  const meta = (sbUser.user_metadata || {}) as Record<string, unknown>;
+  const email = sbUser.email || 'user@edustock.app';
+  const displayName =
+    (typeof meta.name === 'string' && meta.name.trim()) ||
+    (typeof meta.callsign === 'string' && meta.callsign.trim()) ||
+    email.split('@')[0];
+  const role = normalizeUserRole(meta.role);
+  const username =
+    (typeof meta.username === 'string' && meta.username.trim()) ||
+    email.split('@')[0];
+
+  return {
+    user: {
+      id: stableNumericId(sbUser.id),
+      authUid: sbUser.id,
+      username,
+      name: displayName,
+      email,
+      role,
+      aktif: true,
+    },
+    token: sbSession.access_token,
+    expiresAt: sbSession.expires_at
+      ? new Date(sbSession.expires_at * 1000).toISOString()
+      : new Date(Date.now() + 3600 * 1000).toISOString(),
+    isDemo: false,
+  };
+}
+
+/**
+ * Autentikasi Login melalui Supabase Auth (signInWithPassword)
+ */
+export async function signInWithSupabase(
+  emailInput: string,
+  passwordInput: string
+): Promise<LoginResult> {
+  if (!isSupabaseConfigured) {
+    return {
+      success: false,
+      message:
+        'Kredensial Supabase (.env) belum diisi. Lengkapi EXPO_PUBLIC_SUPABASE_URL dan EXPO_PUBLIC_SUPABASE_ANON_KEY terlebih dahulu.',
+    };
+  }
+
+  const cleanEmail = emailInput.trim();
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: cleanEmail,
+    password: passwordInput,
+  });
+
+  if (error) {
+    return {
+      success: false,
+      message: error.message,
+    };
+  }
+
+  if (!data.session) {
+    return {
+      success: false,
+      message: 'Sesi Supabase tidak terbentuk. Periksa status konfirmasi email Anda.',
+    };
+  }
+
+  const session = mapSupabaseSessionToAuthSession(data.session);
+  await saveSession(session);
+
+  return {
+    success: true,
+    message: 'Login Supabase berhasil! Sesi disimpan aman di SecureStore.',
+    session,
+  };
+}
+
+/**
+ * Pendaftaran Akun Baru melalui Supabase Auth (signUp + user_metadata)
+ */
+export async function signUpWithSupabase(params: {
+  email: string;
+  password: string;
+  name: string;
+  role: UserRole;
+}): Promise<LoginResult & { needsEmailConfirmation?: boolean }> {
+  if (!isSupabaseConfigured) {
+    return {
+      success: false,
+      message:
+        'Kredensial Supabase (.env) belum diisi. Lengkapi EXPO_PUBLIC_SUPABASE_URL dan EXPO_PUBLIC_SUPABASE_ANON_KEY terlebih dahulu.',
+    };
+  }
+
+  const cleanEmail = params.email.trim();
+  const cleanName = params.name.trim();
+
+  const { data, error } = await supabase.auth.signUp({
+    email: cleanEmail,
+    password: params.password,
+    options: {
+      data: {
+        name: cleanName,
+        callsign: cleanName,
+        username: cleanEmail.split('@')[0],
+        role: params.role,
+      },
+    },
+  });
+
+  if (error) {
+    return {
+      success: false,
+      message: error.message,
+    };
+  }
+
+  if (!data.session) {
+    return {
+      success: true,
+      needsEmailConfirmation: true,
+      message:
+        'Pendaftaran berhasil! Cek email untuk konfirmasi, atau matikan "Confirm email" di Dashboard Supabase agar bisa langsung masuk.',
+    };
+  }
+
+  const session = mapSupabaseSessionToAuthSession(data.session);
+  await saveSession(session);
+
+  return {
+    success: true,
+    needsEmailConfirmation: false,
+    message: 'Pendaftaran berhasil! Akun langsung aktif dan sesi tersimpan aman.',
+    session,
+  };
+}
+
 export async function saveSession(session: AuthSession): Promise<void> {
   try {
     memorySession = session;
-    await AsyncStorage.setItem(STORAGE_KEY_TOKEN, session.token);
-    await AsyncStorage.setItem(STORAGE_KEY_USER, JSON.stringify(session.user));
-    await AsyncStorage.setItem(STORAGE_KEY_IS_DEMO, session.isDemo ? 'true' : 'false');
+    await saveAuthToken(session.token);
+    await ExpoSecureStoreAdapter.setItem(STORAGE_KEY_TOKEN, session.token);
+    await ExpoSecureStoreAdapter.setItem(STORAGE_KEY_USER, JSON.stringify(session.user));
+    await ExpoSecureStoreAdapter.setItem(
+      STORAGE_KEY_IS_DEMO,
+      session.isDemo ? 'true' : 'false'
+    );
   } catch (err) {
-    console.error('Error saving session to storage:', err);
+    console.error('Error saving session to SecureStore:', err);
   }
 }
 
@@ -190,9 +360,18 @@ export async function getSavedSession(): Promise<AuthSession | null> {
   }
 
   try {
-    const token = await AsyncStorage.getItem(STORAGE_KEY_TOKEN);
-    const userJson = await AsyncStorage.getItem(STORAGE_KEY_USER);
-    const isDemoStr = await AsyncStorage.getItem(STORAGE_KEY_IS_DEMO);
+    if (isSupabaseConfigured) {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        const sbMapped = mapSupabaseSessionToAuthSession(data.session);
+        memorySession = sbMapped;
+        return sbMapped;
+      }
+    }
+
+    const token = await ExpoSecureStoreAdapter.getItem(STORAGE_KEY_TOKEN);
+    const userJson = await ExpoSecureStoreAdapter.getItem(STORAGE_KEY_USER);
+    const isDemoStr = await ExpoSecureStoreAdapter.getItem(STORAGE_KEY_IS_DEMO);
 
     if (token && userJson) {
       const user: User = JSON.parse(userJson);
@@ -201,13 +380,15 @@ export async function getSavedSession(): Promise<AuthSession | null> {
       memorySession = {
         user,
         token,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        expiresAt: decoded?.exp
+          ? new Date(decoded.exp * 1000).toISOString()
+          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
         isDemo,
       };
       return memorySession;
     }
   } catch (err) {
-    console.warn('Error reading session from storage:', err);
+    console.warn('Error reading session from SecureStore:', err);
   }
 
   return null;
@@ -221,13 +402,26 @@ export async function getAuthHeader(): Promise<{ Authorization: string } | Recor
   return {};
 }
 
-export async function logout(): Promise<void> {
+export async function clearLocalSessionOnly(): Promise<void> {
   try {
     memorySession = null;
-    await AsyncStorage.removeItem(STORAGE_KEY_TOKEN);
-    await AsyncStorage.removeItem(STORAGE_KEY_USER);
-    await AsyncStorage.removeItem(STORAGE_KEY_IS_DEMO);
+    await deleteAuthToken();
+    await ExpoSecureStoreAdapter.removeItem(STORAGE_KEY_TOKEN);
+    await ExpoSecureStoreAdapter.removeItem(STORAGE_KEY_USER);
+    await ExpoSecureStoreAdapter.removeItem(STORAGE_KEY_IS_DEMO);
   } catch (err) {
-    console.error('Error clearing session:', err);
+    console.error('Error clearing SecureStore session:', err);
+  }
+}
+
+export async function logout(): Promise<void> {
+  try {
+    if (isSupabaseConfigured) {
+      await supabase.auth.signOut();
+    }
+  } catch (err) {
+    console.warn('Supabase signOut warning:', err);
+  } finally {
+    await clearLocalSessionOnly();
   }
 }
