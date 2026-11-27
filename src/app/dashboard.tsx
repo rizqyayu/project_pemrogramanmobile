@@ -32,7 +32,6 @@ import { showAppAlert, showAppConfirm } from '../utils/feedback';
 
 // Import Types
 import {
-  AuthSession,
   Barang,
   KoreksiStokRequest,
   TransaksiStok,
@@ -41,12 +40,18 @@ import {
 } from '../types';
 
 // Import Services & RBAC
+import { useAuth } from '../contexts/AuthContext';
+import { getAuthHeader } from '../services/authService';
 import {
-  getAuthHeader,
-  getSavedSession,
-  loginAsDemo,
-  logout,
-} from '../services/authService';
+  calculateInventorySummary,
+  filterItemsBelowMinimum,
+} from '../services/dataService';
+import {
+  fetchCloudBarang,
+  fetchCloudTransaksi,
+  recordCloudStockMutation,
+  shouldUseCloudDatabase,
+} from '../services/supabaseBarangService';
 
 import {
   authorizeAction,
@@ -78,9 +83,12 @@ import {
  */
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
+  const { session, isLoading: authLoading, signOut, signInDemo } = useAuth();
+  const isCloudMode = shouldUseCloudDatabase(session);
 
-  const [session, setSession] = useState<AuthSession | null>(null);
   const [storeSnapshot, setStoreSnapshot] = useState(() => getStoreSnapshot());
+  const [cloudBarangList, setCloudBarangList] = useState<Barang[] | null>(null);
+  const [cloudTransaksiList, setCloudTransaksiList] = useState<TransaksiStok[] | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
@@ -138,15 +146,33 @@ export default function DashboardScreen() {
   }, []);
 
   const {
-    barangList,
-    transaksiList,
-    summary,
-    alertItems,
+    barangList: localBarangList,
+    transaksiList: localTransaksiList,
+    summary: localSummary,
+    alertItems: localAlertItems,
     koreksiList,
     managedUsers,
     warehouseConfig,
     presensiLogs,
   } = storeSnapshot;
+
+  const barangList = isCloudMode && cloudBarangList !== null ? cloudBarangList : localBarangList;
+  const transaksiList =
+    isCloudMode && cloudTransaksiList !== null ? cloudTransaksiList : localTransaksiList;
+  const summary = useMemo(
+    () =>
+      isCloudMode && cloudBarangList !== null
+        ? calculateInventorySummary(barangList, transaksiList)
+        : localSummary,
+    [isCloudMode, cloudBarangList, barangList, transaksiList, localSummary]
+  );
+  const alertItems = useMemo(
+    () =>
+      isCloudMode && cloudBarangList !== null
+        ? filterItemsBelowMinimum(barangList)
+        : localAlertItems,
+    [isCloudMode, cloudBarangList, barangList, localAlertItems]
+  );
 
   // Hak Akses RBAC Turunan dari Token & Session
   const isAdmin = currentUser.role === 'Admin Gudang';
@@ -222,9 +248,45 @@ export default function DashboardScreen() {
   const isStokKurang =
     stokModalType === 'keluar' && selectedBarang && parsedJumlah > selectedBarang.stok;
 
-  // Handler Simpan Transaksi Stok Masuk / Keluar melalui Store yang dilindungi RBAC
-  const handleSimpanTransaksi = () => {
+  // Handler Simpan Transaksi Stok Masuk / Keluar melalui Store / Cloud Supabase yang dilindungi RBAC
+  const handleSimpanTransaksi = async () => {
     if (!stokModalType || !selectedBarang) return;
+
+    if (isCloudMode && session && selectedBarang.cloud_id) {
+      const perm = stokModalType === 'masuk' ? 'stock:masuk' : 'stock:keluar';
+      const auth = authorizeAction(session, perm);
+      if (!auth.allowed) {
+        showAppAlert(`Ditolak (${auth.statusCode})`, auth.reason || 'Akses ditolak.');
+        return;
+      }
+
+      const cloudRes = await recordCloudStockMutation(session, {
+        barang: selectedBarang,
+        jenis: stokModalType,
+        jumlah: parsedJumlah,
+        catatan: catatanInput,
+      });
+
+      if (!cloudRes.ok) {
+        showAppAlert('Gagal Menyimpan ke Cloud', cloudRes.message);
+        return;
+      }
+
+      const isMasuk = stokModalType === 'masuk';
+      const actionLabel = isMasuk ? 'Stok Masuk' : 'Stok Keluar';
+      const sign = isMasuk ? '+' : '-';
+      setStokModalType(null);
+      await loadDashboardData();
+
+      showAppAlert(
+        `Sukses Catat ${actionLabel} (Cloud)`,
+        `Transaksi tersimpan di Supabase!\n\n` +
+          `Barang: ${selectedBarang.nama_barang}\n` +
+          `Perubahan: ${sign}${parsedJumlah} ${selectedBarang.satuan}\n` +
+          `Sisa Stok: ${cloudRes.updatedBarang?.stok ?? estimasiStokAkhir} ${selectedBarang.satuan}`
+      );
+      return;
+    }
 
     const result = recordStockMutation(session, {
       id_barang: selectedBarang.id,
@@ -371,8 +433,7 @@ export default function DashboardScreen() {
     }
 
     try {
-      const newSession = await loginAsDemo(roleKey);
-      setSession(newSession);
+      const newSession = await signInDemo(roleKey);
       setMenuViewMode('menu');
       showAppAlert(
         'Peran Berhasil Diperbarui',
@@ -427,9 +488,21 @@ export default function DashboardScreen() {
     setIsLoading(true);
     setDashboardError(null);
     try {
-      const savedSession = await getSavedSession();
-      setSession(savedSession);
       setStoreSnapshot(getStoreSnapshot());
+      if (isCloudMode) {
+        const [barangRes, trxRes] = await Promise.all([
+          fetchCloudBarang(),
+          fetchCloudTransaksi(),
+        ]);
+        if (barangRes.error) {
+          throw new Error(barangRes.error);
+        }
+        setCloudBarangList(barangRes.data);
+        setCloudTransaksiList(trxRes.error ? [] : trxRes.data);
+      } else {
+        setCloudBarangList(null);
+        setCloudTransaksiList(null);
+      }
       setDashboardError(null);
     } catch (error: any) {
       console.warn('Gagal memuat data dashboard:', error);
@@ -438,7 +511,7 @@ export default function DashboardScreen() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [isCloudMode]);
 
   const { isOffline } = useNetworkStatus({
     onReconnect: async () => {
@@ -448,28 +521,9 @@ export default function DashboardScreen() {
   });
 
   useEffect(() => {
-    let isMounted = true;
-    async function init() {
-      try {
-        const savedSession = await getSavedSession();
-        if (isMounted) {
-          setSession(savedSession);
-          setStoreSnapshot(getStoreSnapshot());
-        }
-      } catch (err) {
-        console.warn('Gagal memuat dashboard:', err);
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-    init();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+    if (authLoading) return;
+    loadDashboardData();
+  }, [authLoading, loadDashboardData]);
 
   const onRefresh = async () => {
     setIsRefreshing(true);
@@ -482,7 +536,7 @@ export default function DashboardScreen() {
       'Apakah Anda yakin ingin keluar dari akun EduStock?',
       'Ya, Keluar',
       async () => {
-        await logout();
+        await signOut();
         router.replace('/');
       },
       true
@@ -811,6 +865,17 @@ export default function DashboardScreen() {
                   </View>
                   <Text style={styles.quickActionLabel}>Scan{'\n'}Barcode</Text>
                 </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/transaksi' as any)}
+                >
+                  <View style={[styles.quickActionCircle, { backgroundColor: '#dcfce7' }]}>
+                    <MaterialCommunityIcons name="swap-horizontal" size={19} color={UI.colors.success} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Riwayat{'\n'}Transaksi</Text>
+                </TouchableOpacity>
               </View>
 
               {/* Panel Administrasi Sistem Eksklusif Admin */}
@@ -952,6 +1017,17 @@ export default function DashboardScreen() {
                     <Feather name="navigation" size={17} color={UI.colors.primary} />
                   </View>
                   <Text style={styles.quickActionLabel}>Presensi{'\n'}GPS</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/transaksi' as any)}
+                >
+                  <View style={[styles.quickActionCircle, { backgroundColor: '#dcfce7' }]}>
+                    <MaterialCommunityIcons name="swap-horizontal" size={19} color={UI.colors.success} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Riwayat{'\n'}Transaksi</Text>
                 </TouchableOpacity>
               </View>
             </>
@@ -1129,6 +1205,17 @@ export default function DashboardScreen() {
                     <Feather name="map-pin" size={17} color={UI.colors.primary} />
                   </View>
                   <Text style={styles.quickActionLabel}>Lokasi &{'\n'}Presensi</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionItem}
+                  activeOpacity={0.78}
+                  onPress={() => router.push('/transaksi' as any)}
+                >
+                  <View style={[styles.quickActionCircle, { backgroundColor: '#dcfce7' }]}>
+                    <MaterialCommunityIcons name="swap-horizontal" size={19} color={UI.colors.success} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Riwayat{'\n'}Transaksi</Text>
                 </TouchableOpacity>
               </View>
             </>

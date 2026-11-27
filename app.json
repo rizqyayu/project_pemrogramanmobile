@@ -38,7 +38,8 @@
         {
           "cameraPermission": "Izinkan EduStock mengakses kamera untuk memindai barcode dan QR code barang inventaris."
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

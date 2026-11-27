@@ -32,11 +32,11 @@ import { cardShadow, UI } from '../constants/uiTokens';
 import { AccessDeniedView } from '../components/AccessDeniedView';
 import { showAppAlert, showAppConfirm } from '../utils/feedback';
 
-import { AppApiError, AuthSession, Barang } from '../types';
+import { AppApiError, Barang } from '../types';
 
-import { getSavedSession } from '../services/authService';
+import { useAuth } from '../contexts/AuthContext';
 import { authorizeAction, hasPermission } from '../services/rbacService';
-
+import { determineStatusStok, fetchBarangList, getActiveMockCondition, MockCondition, setActiveMockCondition } from '../services/dataService';
 import {
   applyCatalogOverrides,
   createMasterBarang,
@@ -44,13 +44,13 @@ import {
   subscribeInventoryStore,
   updateMasterBarang,
 } from '../services/inventoryStore';
-
 import {
-  fetchBarangList,
-  getActiveMockCondition,
-  MockCondition,
-  setActiveMockCondition,
-} from '../services/dataService';
+  createCloudBarang,
+  deleteCloudBarang,
+  fetchCloudBarang,
+  shouldUseCloudDatabase,
+  updateCloudBarang,
+} from '../services/supabaseBarangService';
 
 
 /**
@@ -63,9 +63,10 @@ import {
  */
 export default function BarangScreen() {
   const insets = useSafeAreaInsets();
+  const { session, isLoading: authLoading } = useAuth();
+  const sessionLoaded = !authLoading;
+  const isCloudMode = shouldUseCloudDatabase(session);
 
-  const [session, setSession] = useState<AuthSession | null>(null);
-  const [sessionLoaded, setSessionLoaded] = useState<boolean>(false);
   const [barangList, setBarangList] = useState<Barang[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('Semua');
@@ -97,94 +98,71 @@ export default function BarangScreen() {
   const canViewFinance = hasPermission(session, 'catalog:view_finance');
   const canScan = hasPermission(session, 'barcode:scan');
 
-  const loadData = useCallback(() => {
+  const loadData = useCallback(async (overrideMode?: MockCondition) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     setIsLoading(true);
     setError(null);
 
-    fetchBarangList()
-      .then((result) => {
-        if (result.error) {
-          rawApiItemsRef.current = [];
+    const effectiveMode = overrideMode ?? currentMode;
+
+    try {
+      if (isCloudMode && effectiveMode === '2xx') {
+        const cloudRes = await fetchCloudBarang();
+        if (cloudRes.error) {
           setBarangList([]);
-          setError(result.error);
+          setError({
+            kind: '5xx',
+            title: 'Gagal Memuat Data Cloud Supabase',
+            message: cloudRes.error,
+          });
         } else {
-          rawApiItemsRef.current = result.data;
-          setBarangList(applyCatalogOverrides(result.data));
+          rawApiItemsRef.current = cloudRes.data;
+          setBarangList(cloudRes.data);
           setError(null);
         }
-      })
-      .catch((err: any) => {
+        return;
+      }
+
+      const result = await fetchBarangList();
+      if (result.error) {
         rawApiItemsRef.current = [];
         setBarangList([]);
-        setError({
-          kind: 'NETWORK_ERROR',
-          title: 'Koneksi Jaringan Gagal',
-          message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
-        });
-      })
-      .finally(() => {
-        setIsLoading(false);
-        setIsRefreshing(false);
-        isFetchingRef.current = false;
+        setError(result.error);
+      } else {
+        rawApiItemsRef.current = result.data;
+        setBarangList(applyCatalogOverrides(result.data));
+        setError(null);
+      }
+    } catch (err: any) {
+      rawApiItemsRef.current = [];
+      setBarangList([]);
+      setError({
+        kind: 'NETWORK_ERROR',
+        title: 'Koneksi Jaringan Gagal',
+        message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
       });
-  }, []);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+      isFetchingRef.current = false;
+    }
+  }, [isCloudMode, currentMode]);
 
   useEffect(() => {
-    let isMounted = true;
-
-    getSavedSession()
-      .then((saved) => {
-        if (isMounted) {
-          setSession(saved);
-          setSessionLoaded(true);
-        }
-      })
-      .catch(() => {
-        if (isMounted) setSessionLoaded(true);
-      });
-
-    fetchBarangList()
-      .then((result) => {
-        if (!isMounted) return;
-        if (result.error) {
-          rawApiItemsRef.current = [];
-          setBarangList([]);
-          setError(result.error);
-        } else {
-          rawApiItemsRef.current = result.data;
-          setBarangList(applyCatalogOverrides(result.data));
-          setError(null);
-        }
-      })
-      .catch((err: any) => {
-        if (!isMounted) return;
-        rawApiItemsRef.current = [];
-        setBarangList([]);
-        setError({
-          kind: 'NETWORK_ERROR',
-          title: 'Koneksi Jaringan Gagal',
-          message: err?.message || 'Terjadi kesalahan saat memuat data dari server.',
-        });
-      })
-      .finally(() => {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      });
+    if (!sessionLoaded) return;
+    loadData();
 
     const unsub = subscribeInventoryStore(() => {
-      if (rawApiItemsRef.current.length > 0) {
+      if (!isCloudMode && rawApiItemsRef.current.length > 0) {
         setBarangList(applyCatalogOverrides(rawApiItemsRef.current));
       }
     });
 
     return () => {
-      isMounted = false;
       unsub();
     };
-  }, []);
+  }, [sessionLoaded, isCloudMode, loadData]);
 
   const filteredList = useMemo(() => {
     let result = [...barangList];
@@ -215,7 +193,7 @@ export default function BarangScreen() {
   const handleChangeMode = async (mode: MockCondition) => {
     setCurrentMode(mode);
     setActiveMockCondition(mode);
-    await loadData();
+    await loadData(mode);
   };
 
   const openCreateModal = () => {
@@ -255,7 +233,99 @@ export default function BarangScreen() {
     setIsCrudModalVisible(true);
   };
 
-  const handleSaveBarang = () => {
+  const handleSaveBarang = async () => {
+    if (!formNama.trim()) {
+      showAppAlert('Validasi', 'Nama barang wajib diisi.');
+      return;
+    }
+
+    if (isCloudMode && session) {
+      const previousList = barangList;
+
+      if (editingBarang && editingBarang.cloud_id) {
+        const nextStokMin = Math.max(0, parseInt(formStokMin, 10) || 5);
+        const updates = {
+          nama_barang: formNama.trim(),
+          kategori: formKategori.trim() || 'Lab Komputer',
+          stok_minimum: nextStokMin,
+          lokasi_rak: formLokasiRak.trim() || 'Rak A-01',
+          harga_beli: Math.max(0, parseFloat(formHargaBeli) || 0),
+          harga_jual: Math.max(0, parseFloat(formHargaJual) || 0),
+        };
+
+        // Optimistic UI Update
+        setBarangList((prev) =>
+          prev.map((b) =>
+            b.cloud_id === editingBarang.cloud_id
+              ? {
+                  ...b,
+                  ...updates,
+                  status_stok: determineStatusStok(b.stok, nextStokMin),
+                }
+              : b
+          )
+        );
+        setIsCrudModalVisible(false);
+
+        const cloudRes = await updateCloudBarang(editingBarang.cloud_id, updates);
+        if (cloudRes.error || !cloudRes.data) {
+          setBarangList(previousList); // Rollback on failure
+          showAppAlert('Gagal Sinkronisasi Cloud', cloudRes.error || 'Perubahan dibatalkan.');
+          return;
+        }
+
+        setBarangList((prev) =>
+          prev.map((b) => (b.cloud_id === editingBarang.cloud_id ? cloudRes.data! : b))
+        );
+        showAppAlert('Berhasil (Cloud)', `Barang "${cloudRes.data.nama_barang}" diperbarui di Supabase.`);
+        return;
+      }
+
+      // Create Cloud Barang (Optimistic UI)
+      const stokVal = Math.max(0, parseInt(formStok, 10) || 0);
+      const stokMinVal = Math.max(0, parseInt(formStokMin, 10) || 5);
+      const tempId = -Date.now();
+      const optimisticItem: Barang = {
+        id: tempId,
+        kode_barang: `BRG-SYNC`,
+        nama_barang: formNama.trim(),
+        kategori: formKategori.trim() || 'Lab Komputer',
+        stok: stokVal,
+        stok_minimum: stokMinVal,
+        satuan: formSatuan.trim() || 'Unit',
+        harga_beli: Math.max(0, parseFloat(formHargaBeli) || 0),
+        harga_jual: Math.max(0, parseFloat(formHargaJual) || 0),
+        lokasi_rak: formLokasiRak.trim() || 'Rak A-01',
+        status_stok: determineStatusStok(stokVal, stokMinVal),
+      };
+
+      setBarangList((prev) => [optimisticItem, ...prev]);
+      setIsCrudModalVisible(false);
+
+      const cloudRes = await createCloudBarang(session, {
+        nama_barang: optimisticItem.nama_barang,
+        kategori: optimisticItem.kategori,
+        stok: optimisticItem.stok,
+        stok_minimum: optimisticItem.stok_minimum,
+        satuan: optimisticItem.satuan,
+        harga_beli: optimisticItem.harga_beli,
+        harga_jual: optimisticItem.harga_jual,
+        lokasi_rak: optimisticItem.lokasi_rak,
+      });
+
+      if (cloudRes.error || !cloudRes.data) {
+        setBarangList(previousList); // Rollback on failure
+        showAppAlert('Gagal Menyimpan ke Cloud', cloudRes.error || 'Penambahan barang dibatalkan.');
+        return;
+      }
+
+      setBarangList((prev) =>
+        prev.map((b) => (b.id === tempId ? cloudRes.data! : b))
+      );
+      showAppAlert('Berhasil (Cloud)', `Barang "${cloudRes.data.nama_barang}" tersimpan di Supabase.`);
+      return;
+    }
+
     if (editingBarang) {
       const res = updateMasterBarang(session, editingBarang.id, {
         nama_barang: formNama,
@@ -304,7 +374,23 @@ export default function BarangScreen() {
       'Hapus Master Barang',
       `Yakin ingin menghapus "${item.nama_barang}" (${item.kode_barang}) dari inventaris?`,
       'Ya, Hapus',
-      () => {
+      async () => {
+        if (isCloudMode && item.cloud_id) {
+          const previousList = barangList;
+          // Optimistic UI Delete
+          setSelectedDetailBarang(null);
+          setBarangList((prev) => prev.filter((b) => b.cloud_id !== item.cloud_id));
+
+          const cloudRes = await deleteCloudBarang(item.cloud_id);
+          if (!cloudRes.ok) {
+            setBarangList(previousList); // Rollback on failure
+            showAppAlert('Gagal Menghapus di Cloud', cloudRes.error || 'Penghapusan dibatalkan.');
+            return;
+          }
+          showAppAlert('Barang Dihapus (Cloud)', `"${item.nama_barang}" telah dihapus dari Supabase.`);
+          return;
+        }
+
         const res = deleteMasterBarang(session, item.id);
         if (!res.ok) {
           showAppAlert(`Ditolak (${res.statusCode})`, res.message);
@@ -608,7 +694,7 @@ export default function BarangScreen() {
           <TouchableOpacity
             style={styles.retryButton}
             activeOpacity={0.8}
-            onPress={loadData}
+            onPress={() => loadData()}
           >
             <Text style={styles.retryButtonText}>Coba Lagi</Text>
           </TouchableOpacity>

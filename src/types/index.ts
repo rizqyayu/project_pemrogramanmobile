@@ -6,6 +6,7 @@ export type UserRole = 'Admin Gudang' | 'Staff Inventory' | 'Pemilik Toko / Mana
 
 export interface User {
   id: number;
+  authUid?: string;
   username: string;
   password?: string;
   name: string;
@@ -18,6 +19,8 @@ export type StatusStok = 'Aman' | 'Menipis' | 'Habis';
 
 export interface Barang {
   id: number;
+  cloud_id?: string;
+  user_id?: string;
   kode_barang: string;
   nama_barang: string;
   kategori: string;
